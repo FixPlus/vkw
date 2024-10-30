@@ -162,6 +162,15 @@ public:
                      T const &constant) noexcept {
     m_pushConstants(layout, shaderStage, offset, sizeof(constant), &constant);
   }
+
+  template <typename T>
+  void pushConstantsSpan(PipelineLayout const &layout,
+                         VkShaderStageFlagBits shaderStage, uint32_t offset,
+                         std::span<const T> constantSpan) noexcept {
+    m_pushConstants(layout, shaderStage, offset,
+                    sizeof(T) * constantSpan.size(), constantSpan.data());
+  }
+
   /** Draw commands */
 
   void draw(uint32_t vertexCount, uint32_t instanceCount = 0,

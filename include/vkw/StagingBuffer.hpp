@@ -15,7 +15,8 @@ public:
   // Create initialized.
   StagingBuffer(vkw::Device const &device, std::span<T const> data)
       : vkw::Buffer<T>(
-            device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            device, data.size(),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VmaAllocationCreateInfo{.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                     .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
                                     .requiredFlags =
@@ -25,7 +26,8 @@ public:
   // Create uninitialized.
   StagingBuffer(vkw::Device const &device, size_t size)
       : vkw::Buffer<T>(
-            device, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            device, size,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VmaAllocationCreateInfo{.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                     .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
                                     .requiredFlags =
