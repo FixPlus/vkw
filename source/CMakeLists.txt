@@ -34,8 +34,8 @@ elseif(UNIX)
     set(VULKAN_SDK_LIB_DIR $ENV{VULKAN_SDK}/lib)
 endif()
 
-find_package(SPIRV-Tools-opt REQUIRED)
-find_package(SPIRV-Tools-link REQUIRED)
+#find_package(SPIRV-Tools-opt REQUIRED)
+#find_package(SPIRV-Tools-link REQUIRED)
 
 file(GLOB ${PROJECT_NAME}_SOURCE *.cpp *.h *.hpp ../include/vkw/*.h ../include/vkw/*.hpp)
 
@@ -44,8 +44,8 @@ add_library(${MAIN_LIB_NAME}s STATIC ${${PROJECT_NAME}_SOURCE} ../external/SPIRV
 
 add_subdirectory(loader)
 
-target_link_libraries(${MAIN_LIB_NAME} PRIVATE LOADER_LIB SPIRV-Tools-link)
+target_link_libraries(${MAIN_LIB_NAME} PRIVATE LOADER_LIB SPIRV_LINK)
 target_include_directories(${MAIN_LIB_NAME} PRIVATE $ENV{Vulkan_INCLUDE_DIR} ../external/SPIRV-Reflect)
 
-target_link_libraries(${MAIN_LIB_NAME}s PRIVATE LOADER_LIB SPIRV-Tools-link)
+target_link_libraries(${MAIN_LIB_NAME}s PRIVATE LOADER_LIB SPIRV_LINK)
 target_include_directories(${MAIN_LIB_NAME}s PRIVATE $ENV{Vulkan_INCLUDE_DIR} ../external/SPIRV-Reflect)
