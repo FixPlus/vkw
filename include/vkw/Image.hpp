@@ -195,9 +195,13 @@ enum ImageArrayness { SINGLE, ARRAY };
 
 template <ImageArrayness iarr> struct ImageArraynessT {};
 
-template <> struct ImageArraynessT<SINGLE> { using Type = ImageSingle; };
+template <> struct ImageArraynessT<SINGLE> {
+  using Type = ImageSingle;
+};
 
-template <> struct ImageArraynessT<ARRAY> { using Type = ImageArray; };
+template <> struct ImageArraynessT<ARRAY> {
+  using Type = ImageArray;
+};
 
 template <typename T>
 concept ImageArrayOrSingle =
@@ -337,6 +341,13 @@ public:
   }
   unsigned baseLayer() const noexcept {
     return m_createInfo.subresourceRange.baseArrayLayer;
+  }
+
+  unsigned levels() const noexcept {
+    return m_createInfo.subresourceRange.levelCount;
+  }
+  unsigned baseLevel() const noexcept {
+    return m_createInfo.subresourceRange.baseMipLevel;
   }
 
 protected:
@@ -542,7 +553,7 @@ class ImageView : public ImageViewIPT<ptype>,
                   public ImageViewCreator {
 public:
   template <ImageType itype>
-  requires CompatibleViewTypeC<itype, vtype>
+    requires CompatibleViewTypeC<itype, vtype>
   ImageView(Device const &device, BasicImage<ptype, itype, ARRAY> const &image,
             VkFormat format, unsigned baseLayer = 0, unsigned layerCount = 1,
             unsigned baseMipLevel = 0, unsigned mipLevels = 1,
@@ -553,15 +564,14 @@ public:
                     .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                     .a = VK_COMPONENT_SWIZZLE_IDENTITY,
                 },
-            VkImageViewCreateFlags flags = 0)
-  noexcept(ExceptionsDisabled)
+            VkImageViewCreateFlags flags = 0) noexcept(ExceptionsDisabled)
       : ImageViewBase(&image, format, 0, 0, mapping, flags),
         ImageViewIPT<ptype>(format),
         ImageViewSubRange(baseLayer, layerCount, baseMipLevel, mipLevels),
         ImageViewVT<vtype>(), ImageViewCreator(device) {}
 
   template <ImageType itype>
-  requires CompatibleViewTypeC<itype, vtype>
+    requires CompatibleViewTypeC<itype, vtype>
   ImageView(Device const &device, BasicImage<ptype, itype, SINGLE> const &image,
             VkFormat format, unsigned baseMipLevel = 0, unsigned mipLevels = 1,
             VkComponentMapping mapping =
@@ -571,8 +581,7 @@ public:
                     .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                     .a = VK_COMPONENT_SWIZZLE_IDENTITY,
                 },
-            VkImageViewCreateFlags flags = 0)
-  noexcept(ExceptionsDisabled)
+            VkImageViewCreateFlags flags = 0) noexcept(ExceptionsDisabled)
       : ImageViewBase(&image, format, 0, 0, mapping, flags),
         ImageViewIPT<ptype>(format),
         ImageViewSubRange(0, 1, baseMipLevel, mipLevels), ImageViewVT<vtype>(),

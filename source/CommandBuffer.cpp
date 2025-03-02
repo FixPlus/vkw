@@ -238,6 +238,16 @@ void CommandBuffer::blitImage(const AllocatedImage &targetImage,
                                              srcLayout, targetImage, dstLayout,
                                              1, &blit, filter);
 }
+
+void CommandBuffer::blitImage(AllocatedImage const &srcImage,
+                              AllocatedImage const &dstImage,
+                              std::span<const VkImageBlit> blits,
+                              VkFilter filter) noexcept {
+  m_device.get().core<1, 0>().vkCmdBlitImage(
+      m_commandBuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blits.size(), blits.data(), filter);
+}
+
 void CommandBuffer::m_bindDescriptorSets(const PipelineLayout &layout,
                                          VkPipelineBindPoint bindPoint,
                                          size_t firstSet,

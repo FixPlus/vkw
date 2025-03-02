@@ -123,6 +123,8 @@ void RenderPassCreateInfo::m_init(
       return ss.str();
     }()));
 
+  std::ranges::sort(m_attachments,
+                    [](auto &&a1, auto &&a2) { return a1.id < a2.id; });
   std::transform(m_attachments.begin(), m_attachments.end(),
                  std::back_inserter(m_attachments_raw),
                  [](auto &attachment) { return attachment; });

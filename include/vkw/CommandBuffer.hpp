@@ -64,6 +64,10 @@ public:
                  bool usingGeneralLayout = false,
                  VkFilter filter = VK_FILTER_LINEAR) noexcept;
 
+  void blitImage(AllocatedImage const &srcImage, AllocatedImage const &dstImage,
+                 std::span<const VkImageBlit> blits,
+                 VkFilter filter = VK_FILTER_LINEAR) noexcept;
+
   /** Synchronization */
   void
   pipelineBarrier(VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage,

@@ -290,14 +290,14 @@ private:
  */
 
 template <typename T>
-concept BindingPointDescriptionLike = requires(T desc) {
-  T::binding;
-  std::same_as<decltype(T::binding), uint32_t>;
-  T::value;
-  std::same_as<decltype(T::value), VkVertexInputBindingDescription>;
-  typename T::Attributes;
-}
-&&AttributeArray<typename T::Attributes>;
+concept BindingPointDescriptionLike =
+    requires(T desc) {
+      T::binding;
+      std::same_as<decltype(T::binding), uint32_t>;
+      T::value;
+      std::same_as<decltype(T::value), VkVertexInputBindingDescription>;
+      typename T::Attributes;
+    } && AttributeArray<typename T::Attributes>;
 
 /**
  *
@@ -583,6 +583,12 @@ public:
 
   auto fragmentShader() const noexcept { return m_fragmentShader; }
 
+  void clearShaders() {
+    m_vertexShader.reset();
+    m_fragmentShader.reset();
+    m_shaderStages.clear();
+  }
+
 private:
   StrongReference<RenderPass const> m_renderPass;
 
@@ -711,16 +717,11 @@ public:
   GraphicsPipeline(
       Device &device,
       GraphicsPipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo), m_createInfo(createInfo) {}
+      : Pipeline(device, createInfo) {}
 
   GraphicsPipeline(Device &device, GraphicsPipelineCreateInfo const &createInfo,
                    PipelineCache const &cache) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo, cache), m_createInfo(createInfo) {}
-
-  GraphicsPipelineCreateInfo const &info() const { return m_createInfo; }
-
-private:
-  GraphicsPipelineCreateInfo m_createInfo;
+      : Pipeline(device, createInfo, cache) {}
 };
 
 /**
