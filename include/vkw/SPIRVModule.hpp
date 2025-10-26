@@ -2,78 +2,170 @@
 #define VKWRAPPER_SPIRVMODULE_HPP
 
 #include <algorithm>
-#include <boost/container/small_vector.hpp>
 #include <memory>
 #include <ranges>
 #include <span>
 #include <vector>
 #include <vkw/Exception.hpp>
-#include <vkw/ReferenceGuard.hpp>
+#include <vkw/Runtime.h>
 
-struct SpvReflectShaderModule;
-struct SpvReflectEntryPoint;
-struct SpvReflectInterfaceVariable;
-struct SpvReflectDescriptorSet;
-struct SpvReflectDescriptorBinding;
-struct SpvReflectBlockVariable;
-
-namespace spv_reflect {
-
-class ShaderModule;
-
-}
 namespace vkw {
 
-class SPIRVModuleInfo;
-
-class SPIRVModule {
+class SPIRVModule final {
 public:
   explicit SPIRVModule(std::span<const unsigned> code) noexcept(
-      ExceptionsDisabled);
-
-  template <std::ranges::range Modules>
-  requires std::same_as<
-      typename std::remove_cv<std::ranges::range_value_t<Modules>>::type,
-      SPIRVModule>
-  explicit SPIRVModule(Modules const &modules,
-                       bool linkLibrary = false) noexcept(ExceptionsDisabled) {
-#ifndef __linux__
-    boost::container::small_vector<std::span<const unsigned>, 3> input;
-#else
-    std::vector<std::span<const unsigned>> input;
-#endif
-    std::transform(modules.begin(), modules.end(), std::back_inserter(input),
-                   [](SPIRVModule const &module) { return module.code(); });
-    m_link(m_code, std::span<const std::span<const unsigned>>{input},
-           linkLibrary);
+      ExceptionsDisabled) {
+    m_code.reserve(code.size());
+    std::copy(code.begin(), code.end(), std::back_inserter(m_code));
+    // TODO: maybe some code verification checks here
   }
 
   std::span<const unsigned> code() const noexcept { return m_code; }
 
-  /// SPIRVModuleInfo is constructed lazily upon first request.
-  const SPIRVModuleInfo &info() const noexcept(ExceptionsDisabled);
+private:
+  cntr::vector<unsigned, 1> m_code;
+};
 
-  /// Provides shared ownership of shader info (used by Shader class).
-  std::shared_ptr<SPIRVModuleInfo> takeInfo() const
-      noexcept(ExceptionsDisabled);
+class SPIRVLinkError : public Error {
+public:
+  SPIRVLinkError(std::string_view what) : Error(what){};
+  std::string_view codeString() const noexcept override {
+    return "spirv-link error";
+  }
+};
 
-  virtual ~SPIRVModule();
+class SPIRVLinkMessageConsumer {
+public:
+  virtual void onMessage(VKW_spvMessageLevel level, const char *source,
+                         size_t line, size_t column, const char *message) = 0;
+  virtual ~SPIRVLinkMessageConsumer() = default;
+};
+
+class SPIRVLinkContext final {
+public:
+  SPIRVLinkContext(SPIRVLinkMessageConsumer *consumer = nullptr)
+      : m_context([&]() {
+          VKW_spvContext handle = nullptr;
+          auto result = vkw_createSpvContext(
+              &handle, consumer ? &m_consumer_impl : nullptr, consumer);
+          if (result == VKW_OK)
+            return handle;
+          postError(
+              SPIRVLinkError("create spv context returned non-zero status"));
+        }()) {}
+
+  SPIRVModule link(auto &&modules, bool linkLibrary = false) const {
+    cntr::vector<size_t, 3> codeSizes;
+    cntr::vector<const unsigned int *, 3> codes;
+
+    std::ranges::transform(modules, std::back_inserter(codes),
+                           [](auto &&module) { return module.code().data(); });
+    std::ranges::transform(modules, std::back_inserter(codeSizes),
+                           [](auto &&module) { return module.code().size(); });
+    VKW_spvLinkInfo linkInfo{};
+    linkInfo.binaries = codes.data();
+    linkInfo.binary_sizes = codeSizes.data();
+    linkInfo.num_binaries = codes.size();
+    if (linkLibrary)
+      linkInfo.flags =
+          VKW_SPV_LINK_ALLOW_PARTIAL_LINKAGE | VKW_SPV_LINK_CREATE_LIBRARY;
+
+    uint32_t *linkedData;
+    size_t linkedSize;
+
+    auto result =
+        vkw_spvLink(m_context.get(), &linkInfo, &linkedData, &linkedSize);
+
+    if (result == VKW_OK) {
+      auto freeLinkedData = [](uint32_t *data) {
+        vkw_spvLinkedImageFree(data);
+      };
+      std::unique_ptr<uint32_t, decltype(freeLinkedData)> linkedDataKeeper(
+          linkedData);
+      return SPIRVModule(
+          std::span<const unsigned>{linkedData, linkedData + linkedSize});
+    }
+    /// TODO: pass result value may be?
+    postError(SPIRVLinkError("link failed"));
+  }
 
 private:
-  static void m_link(std::vector<unsigned> &output,
-                     std::span<const std::span<const unsigned>> input,
-                     bool linkLibrary) noexcept(ExceptionsDisabled);
-  std::vector<unsigned> m_code;
-  // Make it shared to allow copy.
-  // Mutable is for lazy construction.
-  mutable std::shared_ptr<SPIRVModuleInfo> m_info;
+  static void m_consumer_impl(VKW_spvMessageLevel level, const char *source,
+                              size_t line, size_t column, const char *message,
+                              void *userData) {
+    if (!userData)
+      return;
+    auto *consumer = reinterpret_cast<SPIRVLinkMessageConsumer *>(userData);
+    consumer->onMessage(level, source, line, column, message);
+  }
+  struct ContextDestroyer {
+    void operator()(VKW_spvContext handle) { vkw_destroySpvContext(handle); }
+  };
+  std::unique_ptr<VKW_spvContext_T, ContextDestroyer> m_context;
+};
+
+class SPIRVReflectError : public Error {
+private:
+  static std::string_view reflectErrorStr(SpvReflectResult result) noexcept {
+    switch (result) {
+#define CASE(X)                                                                \
+  case X:                                                                      \
+    return #X;
+      CASE(SPV_REFLECT_RESULT_SUCCESS)
+      CASE(SPV_REFLECT_RESULT_NOT_READY)
+      CASE(SPV_REFLECT_RESULT_ERROR_PARSE_FAILED)
+      CASE(SPV_REFLECT_RESULT_ERROR_ALLOC_FAILED)
+      CASE(SPV_REFLECT_RESULT_ERROR_RANGE_EXCEEDED)
+      CASE(SPV_REFLECT_RESULT_ERROR_NULL_POINTER)
+      CASE(SPV_REFLECT_RESULT_ERROR_INTERNAL_ERROR)
+      CASE(SPV_REFLECT_RESULT_ERROR_COUNT_MISMATCH)
+      CASE(SPV_REFLECT_RESULT_ERROR_ELEMENT_NOT_FOUND)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_CODE_SIZE)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_MAGIC_NUMBER)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_UNEXPECTED_EOF)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_ID_REFERENCE)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_SET_NUMBER_OVERFLOW)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_STORAGE_CLASS)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_RECURSION)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_INSTRUCTION)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_UNEXPECTED_BLOCK_DATA)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_BLOCK_MEMBER_REFERENCE)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_ENTRY_POINT)
+      CASE(SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_EXECUTION_MODE)
+#undef CASE
+    default:
+      return "**UNKNOWN**";
+    }
+  }
+
+public:
+  SPIRVReflectError(SpvReflectResult result, std::string_view libCallName)
+      : Error([&]() {
+          std::stringstream ss;
+          ss << "SPIRV-Reflect - call to " << libCallName << " returned "
+             << reflectErrorStr(result) << " code";
+          return ss.str();
+        }()),
+        m_result(result), m_libCallName(libCallName) {}
+
+  auto result() const noexcept { return m_result; }
+
+  auto libCallName() const noexcept { return m_libCallName; }
+
+  std::string_view codeString() const noexcept override {
+    return "spirv-reflect error";
+  }
+
+private:
+  SpvReflectResult m_result;
+  std::string_view m_libCallName;
 };
 
 template <typename T>
 concept ReflectInfoIteratorTraits = requires {
-  typename T::value_type;
-  typename T::super_type;
-};
+                                      typename T::value_type;
+                                      typename T::super_type;
+                                    };
 
 template <ReflectInfoIteratorTraits T> struct ReflectInfoIteratorTraitsCommon {
   static typename T::value_type get_value(typename T::super_type *s,
@@ -177,11 +269,18 @@ public:
   /// attr.isInput() == true;
   /// attr.isOutput() == false;
 
-  unsigned location() const noexcept;
-  VkFormat format() const noexcept;
-  std::string_view name() const noexcept;
-  bool isInput() const noexcept;
-  bool isOutput() const noexcept;
+  unsigned location() const noexcept { return m_var->location; }
+  VkFormat format() const noexcept {
+    // VkFormat <-> SpvReflectFormat are mapped one to one.
+    return VkFormat(m_var->format);
+  }
+  std::string_view name() const noexcept { return m_var->name; }
+  bool isInput() const noexcept {
+    return m_var->storage_class == SpvStorageClassInput;
+  }
+  bool isOutput() const noexcept {
+    return m_var->storage_class == SpvStorageClassOutput;
+  }
 
 private:
   friend class ReflectInfoIteratorTraitsCommon<ReflectInputVariableTraits>;
@@ -205,17 +304,20 @@ class SPIRVDescriptorBindingInfo {
 public:
   /// Descriptor type that should be passed to
   /// VkDescriptorSetLayoutBinding.
-  VkDescriptorType descriptorType() const noexcept;
+  VkDescriptorType descriptorType() const noexcept {
+    // VkDescriptorType <-> SpvReflectDescriptorType are mapped one to one.
+    return VkDescriptorType(m_binding->descriptor_type);
+  }
 
   /// Descriptor count that should be passed to
   /// VkDescriptorSetLayoutBinding.
-  unsigned descriptorCount() const noexcept;
+  unsigned descriptorCount() const noexcept { return m_binding->count; }
 
   /// Name of binding given in source code.
-  std::string_view name() const noexcept;
+  std::string_view name() const noexcept { return m_binding->name; }
 
   /// Index of binding from layout.
-  unsigned index() const noexcept;
+  unsigned index() const noexcept { return m_binding->binding; }
 
 private:
   friend class ReflectInfoIteratorTraitsCommon<ReflectDescriptorBindingTraits>;
@@ -234,9 +336,9 @@ struct PushConstantTraits {
 
 class SPIRVPushConstantInfo {
 public:
-  unsigned size() const;
+  unsigned size() const { return m_constant->size; }
 
-  unsigned offset() const;
+  unsigned offset() const { return m_constant->offset; }
 
 private:
   friend class ReflectInfoIteratorTraitsCommon<PushConstantTraits>;
@@ -263,7 +365,7 @@ public:
   using Bindings = ReflectInfoRange<ReflectDescriptorBindingTraits>;
 
   /// Set index from layout.
-  unsigned index() const noexcept;
+  unsigned index() const noexcept { return m_set->set; }
 
   /// Range of bindings in set.
   auto bindings() const noexcept { return Bindings{m_set}; }
@@ -291,10 +393,14 @@ public:
   using InterfaceVariables = ReflectInfoRange<ReflectInterfaceVariableTraits>;
   using DescriptorSets = ReflectInfoRange<ReflectDescriptorSetTraits>;
 
-  std::string_view name() const noexcept;
-  unsigned id() const noexcept;
+  std::string_view name() const noexcept { return m_handle->name; }
+  unsigned id() const noexcept { return m_handle->id; }
 
-  VkShaderStageFlagBits stage() const noexcept;
+  VkShaderStageFlagBits stage() const noexcept {
+    // VkShaderStageFlagBits <-> SpvReflectShaderStageFlagBits are mapped one to
+    // one.
+    return VkShaderStageFlagBits(m_handle->shader_stage);
+  }
 
   /// Input shader attributes used by this kernel. In GLSL are marked as 'in'.
   /// @note they are NOT sorted by their location.
@@ -323,28 +429,154 @@ private:
 class SPIRVModuleInfo final {
 public:
   explicit SPIRVModuleInfo(SPIRVModule const &module) noexcept(
-      ExceptionsDisabled);
+      ExceptionsDisabled)
+      : m_info([&]() {
+          auto ret = std::make_unique<SpvReflectShaderModule>();
+          auto code = module.code();
+          auto result = vkw_spvReflectCreateShaderModule(
+              sizeof(uint32_t) * code.size(), code.data(), ret.get());
+          if (result != SPV_REFLECT_RESULT_SUCCESS)
+            postError(
+                SPIRVReflectError{result, "vkw_spvReflectCreateShaderModule"});
+          return ret.release();
+        }()) {}
 
   using EntryPoints = ReflectInfoRange<ReflectEntryPointTraits>;
   using DescriptorSets = ReflectInfoRange<ReflectDescriptorSetModuleTraits>;
   using PushConstants = ReflectInfoRange<PushConstantTraits>;
 
   /// List of all entry points defined by that module.
-  auto entryPoints() const noexcept { return EntryPoints(rawModule()); }
+  auto entryPoints() const noexcept { return EntryPoints(m_info.get()); }
 
   /// Descriptors sets used in the first entry point. If there is no
   /// entry points it shows all descriptors for this module.
-  auto sets() const noexcept { return DescriptorSets(rawModule()); }
+  auto sets() const noexcept { return DescriptorSets(m_info.get()); }
 
   /// List of all push constants defined in this module.
-  auto pushConstants() const noexcept { return PushConstants(rawModule()); }
-
-  virtual ~SPIRVModuleInfo();
+  auto pushConstants() const noexcept { return PushConstants(m_info.get()); }
 
 private:
-  const SpvReflectShaderModule *rawModule() const noexcept;
-  std::unique_ptr<spv_reflect::ShaderModule> m_info;
+  struct ModuleDestructor {
+    void operator()(SpvReflectShaderModule *module) {
+      if (module) {
+        vkw_spvReflectDestroyShaderModule(module);
+        delete module;
+      }
+    }
+  };
+  std::unique_ptr<SpvReflectShaderModule, ModuleDestructor> m_info;
 };
+
+template <>
+inline SPIRVEntryPointInfo
+ReflectInfoIteratorTraitsCommon<ReflectEntryPointTraits>::get_value(
+    const SpvReflectShaderModule *s, unsigned idx) noexcept {
+  return SPIRVEntryPointInfo{s->entry_points + idx};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectEntryPointTraits>::get_size(
+    const SpvReflectShaderModule *s) noexcept {
+  return s->entry_point_count;
+}
+
+template <>
+inline SPIRVInterfaceVariable
+ReflectInfoIteratorTraitsCommon<ReflectInterfaceVariableTraits>::get_value(
+    const SpvReflectEntryPoint *s, unsigned idx) noexcept {
+  return SPIRVInterfaceVariable{s->interface_variables + idx};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectInterfaceVariableTraits>::get_size(
+    const SpvReflectEntryPoint *s) noexcept {
+  return s->interface_variable_count;
+}
+
+template <>
+inline SPIRVInterfaceVariable
+ReflectInfoIteratorTraitsCommon<ReflectInputVariableTraits>::get_value(
+    const SpvReflectEntryPoint *s, unsigned idx) noexcept {
+  return SPIRVInterfaceVariable{s->input_variables[idx]};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectInputVariableTraits>::get_size(
+    const SpvReflectEntryPoint *s) noexcept {
+  return s->input_variable_count;
+}
+
+template <>
+inline SPIRVInterfaceVariable
+ReflectInfoIteratorTraitsCommon<ReflectOutputVariableTraits>::get_value(
+    const SpvReflectEntryPoint *s, unsigned idx) noexcept {
+  return SPIRVInterfaceVariable{s->output_variables[idx]};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectOutputVariableTraits>::get_size(
+    const SpvReflectEntryPoint *s) noexcept {
+  return s->output_variable_count;
+}
+
+template <>
+inline SPIRVDescriptorBindingInfo
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorBindingTraits>::get_value(
+    const SpvReflectDescriptorSet *s, unsigned idx) noexcept {
+  return SPIRVDescriptorBindingInfo{s->bindings[idx]};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorBindingTraits>::get_size(
+    const SpvReflectDescriptorSet *s) noexcept {
+  return s->binding_count;
+}
+
+template <>
+inline SPIRVDescriptorSetInfo
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorSetTraits>::get_value(
+    const SpvReflectEntryPoint *s, unsigned idx) noexcept {
+  return SPIRVDescriptorSetInfo{s->descriptor_sets + idx};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorSetTraits>::get_size(
+    const SpvReflectEntryPoint *s) noexcept {
+  return s->descriptor_set_count;
+}
+
+template <>
+inline SPIRVDescriptorSetInfo
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorSetModuleTraits>::get_value(
+    const SpvReflectShaderModule *s, unsigned idx) noexcept {
+  return SPIRVDescriptorSetInfo{s->descriptor_sets + idx};
+}
+
+template <>
+inline unsigned
+ReflectInfoIteratorTraitsCommon<ReflectDescriptorSetModuleTraits>::get_size(
+    const SpvReflectShaderModule *s) noexcept {
+  return s->descriptor_set_count;
+}
+
+template <>
+inline SPIRVPushConstantInfo
+ReflectInfoIteratorTraitsCommon<PushConstantTraits>::get_value(
+    const SpvReflectShaderModule *s, unsigned idx) noexcept {
+  return SPIRVPushConstantInfo{s->push_constant_blocks + idx};
+}
+
+template <>
+inline unsigned ReflectInfoIteratorTraitsCommon<PushConstantTraits>::get_size(
+    const SpvReflectShaderModule *s) noexcept {
+  return s->push_constant_block_count;
+}
 
 } // namespace vkw
 #endif // VKWRAPPER_SPIRVMODULE_HPP

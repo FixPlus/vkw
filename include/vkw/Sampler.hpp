@@ -5,10 +5,11 @@
 
 namespace vkw {
 
-class Sampler : public UniqueVulkanObject<VkSampler> {
+class Sampler : public vk::Sampler {
 public:
   Sampler(Device const &device,
-          VkSamplerCreateInfo createInfo) noexcept(ExceptionsDisabled);
+          VkSamplerCreateInfo createInfo) noexcept(ExceptionsDisabled)
+      : vk::Sampler(device, createInfo), m_createInfo(createInfo) {}
 
   auto &info() const noexcept { return m_createInfo; }
 

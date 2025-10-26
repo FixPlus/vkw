@@ -1,11 +1,9 @@
 include(GenerateExportHeader)
-generate_export_header(${MAIN_LIB_NAME})
-generate_export_header(${MAIN_LIB_NAME}s)
-set_property(TARGET ${MAIN_LIB_NAME} PROPERTY VERSION ${PROJECT_VERSION})
-set_property(TARGET ${MAIN_LIB_NAME}s PROPERTY VERSION ${PROJECT_VERSION})
+generate_export_header(${VKW_RUNTIME_LIB} EXPORT_FILE_NAME ${VKW_GENERATED_DIR}/vkwrt.h)
+install(FILES ${VKW_GENERATED_DIR}/vkwrt.h DESTINATION include/vkw)
+set_property(TARGET ${VKW_RUNTIME_LIB} PROPERTY VERSION ${PROJECT_VERSION})
 
-install(TARGETS LOADER_LIB EXPORT ${PROJECT_NAME}Targets)
-install(TARGETS ${MAIN_LIB_NAME} ${MAIN_LIB_NAME}s EXPORT ${PROJECT_NAME}Targets
+install(TARGETS ${VKW_RUNTIME_LIB} EXPORT ${PROJECT_NAME}Targets
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
         RUNTIME DESTINATION bin
@@ -27,16 +25,8 @@ configure_file(cmake/${PROJECT_NAME}Config.cmake
         "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}Config.cmake"
         COPYONLY
 )
-file(READ cmake/find_dependencies.cmake DEPS_CONTENT)
-file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}Config.cmake" ${DEPS_CONTENT})
-
-if(VKW_ENABLE_REFERENCE_GUARD)
-        file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}Config.cmake" "\nadd_definitions(-DVKW_ENABLE_REFERENCE_GUARD)")
-endif()
-
-if(VKW_ENABLE_EXCEPTIONS)
-        file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}Config.cmake" "\nadd_definitions(-DVKW_ENABLE_EXCEPTIONS)")
-endif()
+file(READ cmake/find_dependencies.cmake VKW_DEPS_CONTENT)
+file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}Config.cmake" ${VKW_DEPS_CONTENT})
 
 set(ConfigPackageLocation lib/cmake/${PROJECT_NAME})
 

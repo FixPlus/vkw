@@ -1,67 +1,57 @@
 #ifndef VKWRAPPER_EXTENSIONS_HPP
 #define VKWRAPPER_EXTENSIONS_HPP
 
-#include <vkw/Exception.hpp>
-#include <vkw/SymbolTable.hpp>
+#include <vkw/Device.hpp>
 
 namespace vkw {
 
-class Instance;
-class Device;
+namespace __detail {
+inline bool isExtensionEnabled(Instance const &instance,
+                               vkw::ext id) noexcept(ExceptionsDisabled) {
+  return instance.isExtensionEnabled(id);
+}
+inline bool isExtensionEnabled(Device const &device,
+                               vkw::ext id) noexcept(ExceptionsDisabled) {
+  return device.physicalDevice().isExtensionEnabled(id);
+}
+
 template <typename T> struct NativeHandlerOf {};
-
-template <> struct NativeHandlerOf<Instance> { using Handle = VkInstance; };
-
-template <> struct NativeHandlerOf<Device> { using Handle = VkDevice; };
-
-enum class ext;
-
-namespace internal {
-bool isExtensionEnabled(Instance const &instance,
-                        const char *extName) noexcept(ExceptionsDisabled);
-bool isExtensionEnabled(Device const &device,
-                        const char *extName) noexcept(ExceptionsDisabled);
-
-const char *ext_name(ext id) noexcept(ExceptionsDisabled);
+template <> struct NativeHandlerOf<Instance> {
+  using Handle = VkInstance;
+};
+template <> struct NativeHandlerOf<Device> {
+  using Handle = VkDevice;
+};
 
 template <typename T>
 using PFN_getProcAddr =
     PFN_vkVoidFunction (*)(typename NativeHandlerOf<T>::Handle, const char *);
 
-template <typename T>
-PFN_getProcAddr<T> getProcAddrOf(T const &instance) noexcept;
+inline PFN_getProcAddr<Device> getProcAddrOf(Device const &device) noexcept {
+  return device.parent().core<1, 0>().vkGetDeviceProcAddr;
+}
 
-extern template PFN_getProcAddr<Device>
-getProcAddrOf(Device const &instance) noexcept;
+inline PFN_getProcAddr<Instance>
+getProcAddrOf(Instance const &instance) noexcept {
+  return instance.parent().vkGetInstanceProcAddr;
+}
 
-extern template PFN_getProcAddr<Instance>
-getProcAddrOf(Instance const &instance) noexcept;
-
-VkInstance handleOf(Instance const &instance) noexcept;
-VkDevice handleOf(Device const &device) noexcept;
-} // namespace internal
+} // namespace __detail
 
 template <ext id, typename T>
 class ExtensionBase
-    : public SymbolTableBase<typename NativeHandlerOf<T>::Handle> {
+    : public SymbolTableBase<typename __detail::NativeHandlerOf<T>::Handle> {
 public:
   explicit ExtensionBase(T const &handle) noexcept(ExceptionsDisabled)
-      : SymbolTableBase<typename NativeHandlerOf<T>::Handle>(
-            internal::getProcAddrOf(handle), internal::handleOf(handle)) {
-    if (!internal::isExtensionEnabled(handle, internal::ext_name(id)))
-      postError(ExtensionMissing(id, internal::ext_name(id)));
+      : SymbolTableBase<typename __detail::NativeHandlerOf<T>::Handle>(
+            __detail::getProcAddrOf(handle), handle) {
+    if (!__detail::isExtensionEnabled(handle, id))
+      postError(ExtensionMissing(id, Library::ExtensionName(id)));
   }
 };
 
 template <ext name> class Extension {};
 
-enum class ext {
-#define VKW_DUMP_EXTENSION_MAP
-#define VKW_EXTENSION_ENTRY(X) X,
-#include "SymbolTable.inc"
-#undef VKW_EXTENSION_ENTRY
-#undef VKW_DUMP_EXTENSION_MAP
-};
 #define VKW_DUMP_EXTENSION_CLASSES
 #include "SymbolTable.inc"
 #undef VKW_DUMP_EXTENSION_CLASSES

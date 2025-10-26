@@ -5,9 +5,13 @@
 #ifdef VKW_VERSION_MINOR
 #error "VKW_VERSION_MINOR must not be defined in here"
 #endif
+#ifdef VKW_VERSION_REV
+#error "VKW_VERSION_REV must not be defined in here"
+#endif
 
 #cmakedefine VKW_VERSION_MAJOR @VKW_VERSION_MAJOR@
 #cmakedefine VKW_VERSION_MINOR @VKW_VERSION_MINOR@
+#cmakedefine VKW_VERSION_REV @VKW_VERSION_REV@
 
 #ifdef VKW_VERSION_MAJOR
 constexpr unsigned MajorVersion = VKW_VERSION_MAJOR;
@@ -21,5 +25,12 @@ constexpr unsigned MinorVersion = VKW_VERSION_MINOR;
 constexpr unsigned MinorVersion = 0u;
 #endif
 
+#ifdef VKW_VERSION_REV
+constexpr unsigned RevVersion = VKW_VERSION_REV;
+#else
+constexpr unsigned RevVersion = 0u;
+#endif
+
 #undef VKW_VERSION_MAJOR
 #undef VKW_VERSION_MINOR
+#undef VKW_VERSION_REV

@@ -8,10 +8,10 @@ namespace vkw {
 template <typename T> class UniformBuffer : public Buffer<T> {
 public:
   UniformBuffer(
-      Device const &device, VmaAllocationCreateInfo const &createInfo,
+      DeviceAllocator &allocator, AllocationCreateInfo const &createInfo,
       VkBufferUsageFlags usage = 0,
       SharingInfo const &sharingInfo = {}) noexcept(ExceptionsDisabled)
-      : Buffer<T>(device, 1, usage | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      : Buffer<T>(allocator, 1, usage | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                   createInfo, sharingInfo) {}
 
 private:
@@ -20,10 +20,10 @@ private:
 template <typename T> class StorageBuffer : public Buffer<T> {
 public:
   StorageBuffer(
-      Device const &device, VmaAllocationCreateInfo const &createInfo,
+      DeviceAllocator &allocator, AllocationCreateInfo const &createInfo,
       VkBufferUsageFlags usage = 0,
       SharingInfo const &sharingInfo = {}) noexcept(ExceptionsDisabled)
-      : Buffer<T>(device, 1, usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      : Buffer<T>(allocator, 1, usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                   createInfo, sharingInfo) {}
 
 private:

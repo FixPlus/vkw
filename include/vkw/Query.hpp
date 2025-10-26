@@ -9,11 +9,12 @@
 
 namespace vkw {
 
-class QueryPool : public UniqueVulkanObject<VkQueryPool> {
+class QueryPool : public vk::QueryPool {
 public:
   QueryPool(
       vkw::Device &device,
-      const VkQueryPoolCreateInfo &createInfo) noexcept(ExceptionsDisabled);
+      const VkQueryPoolCreateInfo &createInfo) noexcept(ExceptionsDisabled)
+      : vk::QueryPool{device, createInfo}, m_size(createInfo.queryCount) {}
 
   void getResults(std::span<uint64_t> results) noexcept(ExceptionsDisabled) {
     m_getResultsImpl(results.data(), 0u, std::min(m_size, results.size()),
@@ -32,7 +33,11 @@ public:
 private:
   void m_getResultsImpl(void *pData, uint32_t firstQuery, uint32_t queryCount,
                         size_t dataSize, size_t stride,
-                        VkQueryResultFlags flags) noexcept(ExceptionsDisabled);
+                        VkQueryResultFlags flags) noexcept(ExceptionsDisabled) {
+    parent().core<1, 0>().vkGetQueryPoolResults(parent(), *this, firstQuery,
+                                                queryCount, dataSize, pData,
+                                                stride, flags);
+  }
   size_t m_size;
 };
 
