@@ -19,8 +19,8 @@ First, install all dependencies listed above.
 ### bash:
 
 ```bash
-git clone https://github.com/FixPlus/VkWrapper.git --recursive
-cd VkWrapper
+git clone https://github.com/FixPlus/vkw.git --recursive
+cd vkw
 cmake -B build -S .
 cmake --build build
 cmake --install build
