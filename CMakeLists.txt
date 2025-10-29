@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.25)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-project(vkw VERSION 0.0.1 LANGUAGES CXX C)
+project(vkw VERSION 0.0.2 LANGUAGES CXX C)
 
 option(VKW_ENABLE_REFERENCE_GUARD "Toggle ReferenceGuard checker. Defaulted OFF" OFF)
 option(VKW_ENABLE_EXCEPTIONS "Toggle exception use. Defaulted ON" ON)

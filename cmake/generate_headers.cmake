@@ -3,7 +3,7 @@ set(VULKAN_REGISTRY_LOCATION $ENV{VULKAN_SDK}/share/vulkan/registry)
 if(WIN32)
     set(VULKAN_LAYER_DESC_LOCATION $ENV{VULKAN_SDK}/Bin)
 elseif(UNIX)
-    set(VULKAN_LAYER_DESC_LOCATION $ENV{VULKAN_SDK}/etc/vulkan/explicit_layer.d)
+    set(VULKAN_LAYER_DESC_LOCATION $ENV{VULKAN_SDK}/share/vulkan/explicit_layer.d)
 endif()
 
 file(MAKE_DIRECTORY ${VKW_GENERATED_DIR})

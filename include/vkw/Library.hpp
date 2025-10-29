@@ -49,17 +49,17 @@ inline ApiVersion::operator std::string() const {
 
 class ApiVersionUnsupported final : public Error {
 public:
-  enum class CompatibilityFactor { EARLIER_VERSION, EXACT_VERSION };
+  enum class CompatibilityFactor { SEM_VERSION, EXACT_VERSION };
   ApiVersionUnsupported(std::string_view details, ApiVersion lastSupported,
                         ApiVersion unsupported,
                         CompatibilityFactor compatibility =
-                            CompatibilityFactor::EARLIER_VERSION) noexcept
+                            CompatibilityFactor::SEM_VERSION) noexcept
       : Error([&]() {
           std::stringstream msg;
           msg << details << ": " << unsupported << " is unsupported ("
-              << (compatibility == CompatibilityFactor::EARLIER_VERSION
-                      ? "last supported: "
-                      : "only supported: ")
+              << (compatibility == CompatibilityFactor::EXACT_VERSION
+                      ? "supported: =="
+                      : "supported: >=")
               << lastSupported << ")";
           return msg.str();
         }()),
@@ -169,10 +169,11 @@ public:
                         : std::make_unique<__detail::VulkanDefaultLoader>()) {
     auto rtVersion = runtimeVersion();
     auto hrVersion = headerVersion();
-    if (hrVersion != rtVersion) {
+    if (hrVersion.major != rtVersion.major ||
+        hrVersion.minor > rtVersion.minor) {
       postError(ApiVersionUnsupported{
           "vkw runtime version mismatch", rtVersion, hrVersion,
-          ApiVersionUnsupported::CompatibilityFactor::EXACT_VERSION});
+          ApiVersionUnsupported::CompatibilityFactor::SEM_VERSION});
     }
 
     vkGetInstanceProcAddr = m_loader->getInstanceProcAddr();
