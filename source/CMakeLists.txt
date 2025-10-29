@@ -10,6 +10,9 @@ install(FILES ${VKW_GENERATED_HEADERS} DESTINATION include/vkw)
 # Runtime shared library.
 add_library(${VKW_RUNTIME_LIB} SHARED Runtime.cpp ${CMAKE_SOURCE_DIR}/external/SPIRV-Reflect/spirv_reflect.c)
 set_target_properties(${VKW_RUNTIME_LIB} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${VKW_PROJECT_BIN}")
+set_target_properties(${VKW_RUNTIME_LIB} PROPERTIES CXX_VISIBILITY_PRESET hidden)
+set_target_properties(${VKW_RUNTIME_LIB} PROPERTIES C_VISIBILITY_PRESET hidden)
+set_target_properties(${VKW_RUNTIME_LIB} PROPERTIES VISIBILITY_INLINES_HIDDEN  hidden)
 
 # Generated headers
 target_sources(${VKW_RUNTIME_LIB} PRIVATE ${VKW_GENERATED_HEADERS})

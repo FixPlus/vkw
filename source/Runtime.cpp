@@ -85,7 +85,7 @@ VKW_ErrorCode vkw_loadVulkan(VKW_RTLoader *handle) try {
 
   std::stringstream ss{};
   ss << libName << " was not found. Error message: " << dlerror();
-  vkw::getErrorString() = std::move(ss).str();
+  vkw::setErrorString(ss.str().c_str());
   return VKW_VULKAN_LIB_MISSING;
 
 #else
