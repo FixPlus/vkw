@@ -87,7 +87,7 @@ def generateExtensionDefinitions():
     device_ext_list['base'] = []
 
     for extension in docRoot.find('extensions'):
-        if len(extension) == 0 or extension.attrib.get('supported') != "vulkan":
+        if len(extension) == 0 or not 'vulkan' in extension.attrib.get('supported').split(','):
             continue
         platform = extension.attrib.get('platform')
         if (platform is None):
@@ -185,9 +185,13 @@ def instanceLevelCommand(command):
             return False
     return True
 
+def filter_commands(command):
+    print(command.attrib)
+    export_list = command.get('export').split(',')
+    return 'vulkan' in export_list and not globalCommand(command).find('name').text
 
 def generateCoreDefinitions():
-    feature_apis = doc.getroot().findall('feature')
+    feature_apis = filter(lambda x: 'vulkan' in x.attrib.get('api').split(',') ,doc.getroot().findall('feature'))
     minor = 0
     major = 1
     prev_instance_class = "SymbolTableBase<VkInstance>"
@@ -215,14 +219,15 @@ def generateCoreDefinitions():
 
         instance_command_list = []
         device_command_list = []
-        for command in feature.iter('command'):
-            command_name = command.attrib.get('name')
-            if globalCommand(command_name):
-                continue
-            if instanceLevelCommand(command_name):
-                instance_command_list.append(command_name)
-            else:
-                device_command_list.append(command_name)
+        for command_set in feature.findall('require'):
+            for command in command_set.iter('command'):
+                command_name = command.attrib.get('name')
+                if globalCommand(command_name):
+                    continue
+                if instanceLevelCommand(command_name):
+                    instance_command_list.append(command_name)
+                else:
+                    device_command_list.append(command_name)
 
         for command in instance_command_list:
             instance_core_header += command + "(getProcAddrT<PFN_" + command + ">(\"" + command + "\")),\n"

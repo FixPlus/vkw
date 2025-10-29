@@ -2,21 +2,18 @@
 #define VKRENDERER_IMAGE_HPP
 
 #include <vkw/Allocation.hpp>
-#include <vkw/Device.hpp>
 
 namespace vkw {
 
 class ImageInterface : public ReferenceGuard {
 public:
-  explicit ImageInterface(VkImageUsageFlags usage = 0) noexcept;
-
-  ImageInterface(ImageInterface &&another) = default;
-  ImageInterface(ImageInterface const &another) = delete;
-
-  ImageInterface &operator=(ImageInterface &&another) = default;
-  ImageInterface &operator=(ImageInterface const &another) = delete;
-
-  virtual ~ImageInterface() = default;
+  explicit ImageInterface(VkImageUsageFlags usage = 0) noexcept {
+    m_createInfo.usage = usage;
+    m_createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    m_createInfo.pNext = nullptr;
+    m_createInfo.arrayLayers =
+        1; // default parameter, maybe overridden by child classes
+  }
 
   VkImageUsageFlags usage() const noexcept { return m_createInfo.usage; }
 
@@ -28,134 +25,142 @@ public:
 
   uint32_t mipLevels() const noexcept { return m_createInfo.mipLevels; }
 
-  VkImageSubresourceRange completeSubresourceRange() const noexcept;
+  VkImageSubresourceRange completeSubresourceRange() const noexcept {
+    VkImageSubresourceRange ret{};
+    ret.baseMipLevel = 0;
+    ret.levelCount = m_createInfo.mipLevels;
+    ret.aspectMask = isDepthFormat(format()) ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                             : VK_IMAGE_ASPECT_COLOR_BIT;
+    ret.baseArrayLayer = 0;
+    ret.layerCount = m_createInfo.arrayLayers;
+    return ret;
+  }
 
   virtual operator VkImage() const noexcept = 0;
 
-  static bool isDepthFormat(VkFormat format) noexcept;
+  static bool isDepthFormat(VkFormat format) noexcept {
+    switch (format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_S8_UINT:
+      return true;
+    default:
+      return false;
+    }
+  }
 
-  static bool isColorFormat(VkFormat format) noexcept;
+  static bool isColorFormat(VkFormat format) noexcept {
+    return !isDepthFormat(format);
+  }
 
 protected:
   VkImageCreateInfo m_createInfo{};
 };
 
+inline bool operator==(VkImageSubresourceRange const &lhs,
+                       VkImageSubresourceRange const &rhs) noexcept {
+  return lhs.levelCount == rhs.levelCount && lhs.layerCount == rhs.layerCount &&
+         lhs.baseMipLevel == rhs.baseMipLevel &&
+         lhs.baseArrayLayer == rhs.baseArrayLayer &&
+         lhs.aspectMask == rhs.aspectMask;
+}
+
+inline bool operator==(VkComponentMapping const &lhs,
+                       VkComponentMapping const &rhs) noexcept {
+  return lhs.r == rhs.r && lhs.g == rhs.g && lhs.b == rhs.b && lhs.a == rhs.a;
+}
+
+inline bool operator==(VkImageViewCreateInfo const &lhs,
+                       VkImageViewCreateInfo const &rhs) noexcept {
+  return lhs.image == rhs.image &&
+         lhs.subresourceRange == rhs.subresourceRange &&
+         lhs.flags == rhs.flags && lhs.format == rhs.format &&
+         lhs.viewType == rhs.viewType && lhs.components == rhs.components;
+}
+
 class ImageViewBase : public ReferenceGuard {
 public:
-  bool operator==(ImageViewBase const &another) const noexcept;
+  bool operator==(ImageViewBase const &another) const noexcept {
+    return m_createInfo == another.m_createInfo;
+  }
 
   ImageInterface const *image() const noexcept { return &m_parent.get(); }
-
-  ImageViewBase(ImageViewBase &&another) noexcept
-      : ReferenceGuard(std::move(another)),
-        m_parent(std::move(another.m_parent)),
-        m_createInfo(another.m_createInfo) {
-    another.m_moved_out = true;
-  }
-  ImageViewBase(ImageViewBase const &another) = delete;
-
-  ImageViewBase &operator=(ImageViewBase &&another) noexcept {
-    ReferenceGuard::operator=(std::move(another));
-    std::swap(m_parent, another.m_parent);
-    m_createInfo = another.m_createInfo;
-    another.m_moved_out = true;
-    return *this;
-  }
-  ImageViewBase &operator=(ImageViewBase const &another) = delete;
 
   virtual operator VkImageView() const noexcept = 0;
 
   VkFormat format() const noexcept { return m_createInfo.format; };
-
-  virtual ~ImageViewBase() = default;
 
 protected:
   explicit ImageViewBase(ImageInterface const *image = nullptr,
                          VkFormat format = VK_FORMAT_MAX_ENUM,
                          uint32_t baseMipLevel = 0, uint32_t levelCount = 1,
                          VkComponentMapping componentMapping = {},
-                         VkImageViewCreateFlags flags = 0) noexcept;
+                         VkImageViewCreateFlags flags = 0) noexcept
+      : m_parent(*image) {
+    assert(image && "incomplete view is constructed");
+    m_createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    m_createInfo.pNext = nullptr;
+    m_createInfo.subresourceRange.baseMipLevel = baseMipLevel;
+    m_createInfo.subresourceRange.levelCount = levelCount;
+    m_createInfo.components = componentMapping;
+    m_createInfo.flags = flags;
+    m_createInfo.image = image->operator VkImage_T *();
+    m_createInfo.format = format;
+  }
   VkImageViewCreateInfo m_createInfo{};
-  auto isMovedOut() const noexcept { return m_moved_out; }
 
 private:
-  bool m_moved_out = false;
   StrongReference<ImageInterface const> m_parent;
 };
 
 class ImageViewCreator : virtual public ImageViewBase {
-public:
-  ~ImageViewCreator() override;
-
 protected:
-  explicit ImageViewCreator(Device const &device) noexcept(ExceptionsDisabled);
+  explicit ImageViewCreator(Device const &device) noexcept(ExceptionsDisabled)
+      : m_imageView(
+            [&]() {
+              VkImageView ret{};
+              VK_CHECK_RESULT(device.core<1, 0>().vkCreateImageView(
+                  device, &m_createInfo, HostAllocator::get(), &ret));
+              return ret;
+            }(),
+            ViewDestructor{device}) {}
 
 public:
-  ImageViewCreator(ImageViewCreator const &another) = delete;
-  ImageViewCreator(ImageViewCreator &&another) noexcept
-      : m_device(another.m_device), m_imageView(another.m_imageView) {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-    another.m_imageView = VK_NULL_HANDLE;
-  };
-
-  ImageViewCreator &operator=(ImageViewCreator const &another) = delete;
-  ImageViewCreator &operator=(ImageViewCreator &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-    std::swap(m_device, another.m_device);
-    std::swap(m_imageView, another.m_imageView);
-    return *this;
-  }
-
-  operator VkImageView() const noexcept override { return m_imageView; };
+  operator VkImageView() const noexcept override { return m_imageView.get(); };
 
 private:
-  VkImageView m_imageView{};
-  StrongReference<Device const> m_device;
+  struct ViewDestructor {
+    StrongReference<Device const> device;
+    void operator()(VkImageView view) {
+      if (!view)
+        return;
+      device.get().core<1, 0>().vkDestroyImageView(device.get(), view,
+                                                   HostAllocator::get());
+    }
+  };
+  std::unique_ptr<VkImageView_T, ViewDestructor> m_imageView;
 };
 
-class AllocatedImage : public Allocation, virtual public ImageInterface {
+class AllocatedImage : public Allocation<VkImage>,
+                       virtual public ImageInterface {
 public:
   AllocatedImage(
-      VmaAllocator allocator,
-      VmaAllocationCreateInfo allocCreateInfo) noexcept(ExceptionsDisabled);
-  AllocatedImage(AllocatedImage &&another) noexcept
-      : Allocation(std::move(another)), ImageInterface(std::move(another)),
-        m_image(another.m_image) {
-    another.m_image = VK_NULL_HANDLE;
-  }
+      DeviceAllocator &allocator,
+      const AllocationCreateInfo &allocCreateInfo) noexcept(ExceptionsDisabled)
+      : Allocation<VkImage>(allocator, allocCreateInfo, m_createInfo) {}
 
-  AllocatedImage(AllocatedImage const &another) = delete;
-  AllocatedImage const &operator=(AllocatedImage const &another) = delete;
-  AllocatedImage &operator=(AllocatedImage &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    std::swap(m_image, another.m_image);
-    return *this;
-  }
-
-  operator VkImage() const noexcept override { return m_image; }
-
-  ~AllocatedImage() override;
-
-private:
-  VkImage m_image = VK_NULL_HANDLE;
+  operator VkImage() const noexcept override { return handle(); }
 };
 
 class NonOwingImage : virtual public ImageInterface {
 public:
-  NonOwingImage(NonOwingImage &&another) noexcept
-      : ImageInterface(std::move(another)), m_image(another.m_image) {}
-  NonOwingImage &operator=(NonOwingImage &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    m_image = another.m_image;
-    return *this;
-  }
+  NonOwingImage(VkImage image) noexcept : m_image(image) {}
 
   operator VkImage() const noexcept override { return m_image; }
-
-protected:
-  explicit NonOwingImage(VkImage image) noexcept : m_image(image) {}
 
 private:
   VkImage m_image;
@@ -167,13 +172,6 @@ public:
     m_createInfo.arrayLayers = arrayLayers;
   }
 
-  ImageArray(ImageArray &&another) noexcept
-      : ImageInterface(std::move(another)) {}
-  ImageArray &operator=(ImageArray &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   unsigned layers() const noexcept { return m_createInfo.arrayLayers; }
 };
 
@@ -182,26 +180,23 @@ public:
   ImageSingle(unsigned arrayLayers = 1) noexcept {
     m_createInfo.arrayLayers = 1;
   }
-
-  ImageSingle(ImageSingle &&another) noexcept
-      : ImageInterface(std::move(another)) {}
-  ImageSingle &operator=(ImageSingle &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
 };
 
 enum ImageArrayness { SINGLE, ARRAY };
 
 template <ImageArrayness iarr> struct ImageArraynessT {};
 
-template <> struct ImageArraynessT<SINGLE> { using Type = ImageSingle; };
+template <> struct ImageArraynessT<SINGLE> {
+  using Type = ImageSingle;
+};
 
-template <> struct ImageArraynessT<ARRAY> { using Type = ImageArray; };
+template <> struct ImageArraynessT<ARRAY> {
+  using Type = ImageArray;
+};
 
 template <typename T>
 concept ImageArrayOrSingle =
-    std::is_same<T, ImageArray>() || std::is_same<T, ImageSingle>();
+    std::is_same_v<T, ImageArray>() || std::is_same_v<T, ImageSingle>();
 
 enum ImagePixelType { COLOR, DEPTH, DEPTH_STENCIL };
 
@@ -302,17 +297,6 @@ template <> struct ImageViewTypeVal<V3D> {
 
 template <ImagePixelType ptype>
 class ImageViewIPT : virtual public ImageViewBase {
-public:
-  ImageViewIPT(ImageViewIPT &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-  }
-  ImageViewIPT &operator=(ImageViewIPT &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-    return *this;
-  }
-
 protected:
   ImageViewIPT(VkFormat format) noexcept {
     m_createInfo.subresourceRange.aspectMask = ImageAspectVal<ptype>::value;
@@ -323,20 +307,18 @@ protected:
 template <ImageViewType vtype>
 class ImageViewVT : virtual public ImageViewBase {
 public:
-  ImageViewVT(ImageViewVT &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-  }
-  ImageViewVT &operator=(ImageViewVT &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-    return *this;
-  }
   unsigned layers() const noexcept {
     return m_createInfo.subresourceRange.layerCount;
   }
   unsigned baseLayer() const noexcept {
     return m_createInfo.subresourceRange.baseArrayLayer;
+  }
+
+  unsigned levels() const noexcept {
+    return m_createInfo.subresourceRange.levelCount;
+  }
+  unsigned baseLevel() const noexcept {
+    return m_createInfo.subresourceRange.baseMipLevel;
   }
 
 protected:
@@ -346,17 +328,6 @@ protected:
 };
 
 class ImageViewSubRange : virtual public ImageViewBase {
-public:
-  ImageViewSubRange(ImageViewSubRange &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-  }
-  ImageViewSubRange &operator=(ImageViewSubRange &&another) noexcept {
-    if (!another.isMovedOut())
-      ImageViewBase::operator=(std::move(another));
-    return *this;
-  }
-
 protected:
   ImageViewSubRange(unsigned baseLayer, unsigned layerCount,
                     unsigned baseMipLevel, unsigned mipLevelCount) noexcept {
@@ -378,33 +349,314 @@ public:
 protected:
   ImageIPT(VkFormat format) noexcept { m_createInfo.format = format; }
 };
+namespace __detail {
 
-unsigned m_FormatRedBits(VkFormat) noexcept;
-unsigned m_FormatGreenBits(VkFormat) noexcept;
-unsigned m_FormatBlueBits(VkFormat) noexcept;
-unsigned m_FormatAlphaBits(VkFormat) noexcept;
-unsigned m_FormatDepthBits(VkFormat) noexcept;
-unsigned m_FormatStencilBits(VkFormat) noexcept;
+inline unsigned m_FormatRedBits(VkFormat format) noexcept {
+  switch (format) {
+  case VK_FORMAT_R8G8B8A8_UINT:
+  case VK_FORMAT_R8G8B8A8_SNORM:
+  case VK_FORMAT_R8G8B8A8_SSCALED:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SINT:
+  case VK_FORMAT_R8G8B8A8_USCALED:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_R8G8B8_SINT:
+  case VK_FORMAT_R8G8B8_SNORM:
+  case VK_FORMAT_R8G8B8_SRGB:
+  case VK_FORMAT_R8G8B8_UINT:
+  case VK_FORMAT_R8G8B8_USCALED:
+  case VK_FORMAT_R8G8B8_UNORM:
+  case VK_FORMAT_R8G8B8_SSCALED:
+  case VK_FORMAT_R8G8_SINT:
+  case VK_FORMAT_R8G8_SNORM:
+  case VK_FORMAT_R8G8_SRGB:
+  case VK_FORMAT_R8G8_UINT:
+  case VK_FORMAT_R8G8_USCALED:
+  case VK_FORMAT_R8G8_UNORM:
+  case VK_FORMAT_R8G8_SSCALED:
+  case VK_FORMAT_R8_SINT:
+  case VK_FORMAT_R8_SNORM:
+  case VK_FORMAT_R8_SRGB:
+  case VK_FORMAT_R8_UINT:
+  case VK_FORMAT_R8_USCALED:
+  case VK_FORMAT_R8_UNORM:
+  case VK_FORMAT_R8_SSCALED:
+    return 8;
+  case VK_FORMAT_R16G16B16A16_UINT:
+  case VK_FORMAT_R16G16B16A16_SNORM:
+  case VK_FORMAT_R16G16B16A16_SSCALED:
+  case VK_FORMAT_R16G16B16A16_UNORM:
+  case VK_FORMAT_R16G16B16A16_SINT:
+  case VK_FORMAT_R16G16B16A16_USCALED:
+  case VK_FORMAT_R16G16B16_SINT:
+  case VK_FORMAT_R16G16B16_SNORM:
+  case VK_FORMAT_R16G16B16_UINT:
+  case VK_FORMAT_R16G16B16_USCALED:
+  case VK_FORMAT_R16G16B16_UNORM:
+  case VK_FORMAT_R16G16B16_SSCALED:
+  case VK_FORMAT_R16G16_SINT:
+  case VK_FORMAT_R16G16_SNORM:
+  case VK_FORMAT_R16G16_UINT:
+  case VK_FORMAT_R16G16_USCALED:
+  case VK_FORMAT_R16G16_UNORM:
+  case VK_FORMAT_R16G16_SSCALED:
+  case VK_FORMAT_R16_SINT:
+  case VK_FORMAT_R16_SNORM:
+  case VK_FORMAT_R16_UINT:
+  case VK_FORMAT_R16_USCALED:
+  case VK_FORMAT_R16_UNORM:
+  case VK_FORMAT_R16_SSCALED:
+    return 16;
+  case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    return 11;
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+inline unsigned m_FormatGreenBits(VkFormat format) noexcept {
+  switch (format) {
+  case VK_FORMAT_R8G8B8A8_UINT:
+  case VK_FORMAT_R8G8B8A8_SNORM:
+  case VK_FORMAT_R8G8B8A8_SSCALED:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SINT:
+  case VK_FORMAT_R8G8B8A8_USCALED:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_R8G8B8_SINT:
+  case VK_FORMAT_R8G8B8_SNORM:
+  case VK_FORMAT_R8G8B8_SRGB:
+  case VK_FORMAT_R8G8B8_UINT:
+  case VK_FORMAT_R8G8B8_USCALED:
+  case VK_FORMAT_R8G8B8_UNORM:
+  case VK_FORMAT_R8G8B8_SSCALED:
+  case VK_FORMAT_R8G8_SINT:
+  case VK_FORMAT_R8G8_SNORM:
+  case VK_FORMAT_R8G8_SRGB:
+  case VK_FORMAT_R8G8_UINT:
+  case VK_FORMAT_R8G8_USCALED:
+  case VK_FORMAT_R8G8_UNORM:
+  case VK_FORMAT_R8G8_SSCALED:
+    return 8;
+  case VK_FORMAT_R16G16B16A16_UINT:
+  case VK_FORMAT_R16G16B16A16_SNORM:
+  case VK_FORMAT_R16G16B16A16_SSCALED:
+  case VK_FORMAT_R16G16B16A16_UNORM:
+  case VK_FORMAT_R16G16B16A16_SINT:
+  case VK_FORMAT_R16G16B16A16_USCALED:
+  case VK_FORMAT_R16G16B16_SINT:
+  case VK_FORMAT_R16G16B16_SNORM:
+  case VK_FORMAT_R16G16B16_UINT:
+  case VK_FORMAT_R16G16B16_USCALED:
+  case VK_FORMAT_R16G16B16_UNORM:
+  case VK_FORMAT_R16G16B16_SSCALED:
+  case VK_FORMAT_R16G16_SINT:
+  case VK_FORMAT_R16G16_SNORM:
+  case VK_FORMAT_R16G16_UINT:
+  case VK_FORMAT_R16G16_USCALED:
+  case VK_FORMAT_R16G16_UNORM:
+  case VK_FORMAT_R16G16_SSCALED:
+    return 16;
+  case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    return 11;
+  case VK_FORMAT_R8_SINT:
+  case VK_FORMAT_R8_SNORM:
+  case VK_FORMAT_R8_SRGB:
+  case VK_FORMAT_R8_UINT:
+  case VK_FORMAT_R8_USCALED:
+  case VK_FORMAT_R8_UNORM:
+  case VK_FORMAT_R8_SSCALED:
+  case VK_FORMAT_R16_SINT:
+  case VK_FORMAT_R16_SNORM:
+  case VK_FORMAT_R16_UINT:
+  case VK_FORMAT_R16_USCALED:
+  case VK_FORMAT_R16_UNORM:
+  case VK_FORMAT_R16_SSCALED:
+    return 0;
 
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+inline unsigned m_FormatBlueBits(VkFormat format) noexcept {
+  switch (format) {
+  case VK_FORMAT_R8G8B8A8_UINT:
+  case VK_FORMAT_R8G8B8A8_SNORM:
+  case VK_FORMAT_R8G8B8A8_SSCALED:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SINT:
+  case VK_FORMAT_R8G8B8A8_USCALED:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_R8G8B8_SINT:
+  case VK_FORMAT_R8G8B8_SNORM:
+  case VK_FORMAT_R8G8B8_SRGB:
+  case VK_FORMAT_R8G8B8_UINT:
+  case VK_FORMAT_R8G8B8_USCALED:
+  case VK_FORMAT_R8G8B8_UNORM:
+  case VK_FORMAT_R8G8B8_SSCALED:
+    return 8;
+
+  case VK_FORMAT_R8_SSCALED:
+  case VK_FORMAT_R16G16B16A16_UINT:
+  case VK_FORMAT_R16G16B16A16_SNORM:
+  case VK_FORMAT_R16G16B16A16_SSCALED:
+  case VK_FORMAT_R16G16B16A16_UNORM:
+  case VK_FORMAT_R16G16B16A16_SINT:
+  case VK_FORMAT_R16G16B16A16_USCALED:
+  case VK_FORMAT_R16G16B16_SINT:
+  case VK_FORMAT_R16G16B16_SNORM:
+  case VK_FORMAT_R16G16B16_UINT:
+  case VK_FORMAT_R16G16B16_USCALED:
+  case VK_FORMAT_R16G16B16_UNORM:
+  case VK_FORMAT_R16G16B16_SSCALED:
+    return 16;
+  case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    return 10;
+  case VK_FORMAT_R8G8_SINT:
+  case VK_FORMAT_R8G8_SNORM:
+  case VK_FORMAT_R8G8_SRGB:
+  case VK_FORMAT_R8G8_UINT:
+  case VK_FORMAT_R8G8_USCALED:
+  case VK_FORMAT_R8G8_UNORM:
+  case VK_FORMAT_R8G8_SSCALED:
+  case VK_FORMAT_R8_SINT:
+  case VK_FORMAT_R8_SNORM:
+  case VK_FORMAT_R8_SRGB:
+  case VK_FORMAT_R8_UINT:
+  case VK_FORMAT_R8_USCALED:
+  case VK_FORMAT_R8_UNORM:
+  case VK_FORMAT_R16G16_SINT:
+  case VK_FORMAT_R16G16_SNORM:
+  case VK_FORMAT_R16G16_UINT:
+  case VK_FORMAT_R16G16_USCALED:
+  case VK_FORMAT_R16G16_UNORM:
+  case VK_FORMAT_R16G16_SSCALED:
+  case VK_FORMAT_R16_SINT:
+  case VK_FORMAT_R16_SNORM:
+  case VK_FORMAT_R16_UINT:
+  case VK_FORMAT_R16_USCALED:
+  case VK_FORMAT_R16_UNORM:
+  case VK_FORMAT_R16_SSCALED:
+    return 0;
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+inline unsigned m_FormatAlphaBits(VkFormat format) noexcept {
+  switch (format) {
+  case VK_FORMAT_R8G8B8A8_UINT:
+  case VK_FORMAT_R8G8B8A8_SNORM:
+  case VK_FORMAT_R8G8B8A8_SSCALED:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SINT:
+  case VK_FORMAT_R8G8B8A8_USCALED:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+    return 8;
+  case VK_FORMAT_R16G16B16A16_UINT:
+  case VK_FORMAT_R16G16B16A16_SNORM:
+  case VK_FORMAT_R16G16B16A16_SSCALED:
+  case VK_FORMAT_R16G16B16A16_UNORM:
+  case VK_FORMAT_R16G16B16A16_SINT:
+  case VK_FORMAT_R16G16B16A16_USCALED:
+    return 16;
+  case VK_FORMAT_R8G8B8_SINT:
+  case VK_FORMAT_R8G8B8_SNORM:
+  case VK_FORMAT_R8G8B8_SRGB:
+  case VK_FORMAT_R8G8B8_UINT:
+  case VK_FORMAT_R8G8B8_USCALED:
+  case VK_FORMAT_R8G8B8_UNORM:
+  case VK_FORMAT_R8G8B8_SSCALED:
+  case VK_FORMAT_R8G8_SINT:
+  case VK_FORMAT_R8G8_SNORM:
+  case VK_FORMAT_R8G8_SRGB:
+  case VK_FORMAT_R8G8_UINT:
+  case VK_FORMAT_R8G8_USCALED:
+  case VK_FORMAT_R8G8_UNORM:
+  case VK_FORMAT_R8G8_SSCALED:
+  case VK_FORMAT_R8_SINT:
+  case VK_FORMAT_R8_SNORM:
+  case VK_FORMAT_R8_SRGB:
+  case VK_FORMAT_R8_UINT:
+  case VK_FORMAT_R8_USCALED:
+  case VK_FORMAT_R8_UNORM:
+  case VK_FORMAT_R8_SSCALED:
+  case VK_FORMAT_R16G16B16_SINT:
+  case VK_FORMAT_R16G16B16_SNORM:
+  case VK_FORMAT_R16G16B16_UINT:
+  case VK_FORMAT_R16G16B16_USCALED:
+  case VK_FORMAT_R16G16B16_UNORM:
+  case VK_FORMAT_R16G16B16_SSCALED:
+  case VK_FORMAT_R16G16_SINT:
+  case VK_FORMAT_R16G16_SNORM:
+  case VK_FORMAT_R16G16_UINT:
+  case VK_FORMAT_R16G16_USCALED:
+  case VK_FORMAT_R16G16_UNORM:
+  case VK_FORMAT_R16G16_SSCALED:
+  case VK_FORMAT_R16_SINT:
+  case VK_FORMAT_R16_SNORM:
+  case VK_FORMAT_R16_UINT:
+  case VK_FORMAT_R16_USCALED:
+  case VK_FORMAT_R16_UNORM:
+  case VK_FORMAT_R16_SSCALED:
+  case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+    return 0;
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+inline unsigned m_FormatDepthBits(VkFormat format) noexcept {
+  switch (format) {
+  case VK_FORMAT_D16_UNORM:
+  case VK_FORMAT_D16_UNORM_S8_UINT:
+    return 16;
+  case VK_FORMAT_X8_D24_UNORM_PACK32:
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return 24;
+  case VK_FORMAT_D32_SFLOAT_S8_UINT:
+  case VK_FORMAT_D32_SFLOAT:
+    return 32;
+  case VK_FORMAT_S8_UINT:
+    return 0;
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+inline unsigned m_FormatStencilBits(VkFormat format) noexcept {
+  switch (format) {
+
+  case VK_FORMAT_D16_UNORM_S8_UINT:
+  case VK_FORMAT_S8_UINT:
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+  case VK_FORMAT_D32_SFLOAT_S8_UINT:
+    return 8;
+  case VK_FORMAT_X8_D24_UNORM_PACK32:
+  case VK_FORMAT_D16_UNORM:
+  case VK_FORMAT_D32_SFLOAT:
+    return 0;
+  default:
+    assert("Format Not Handled yet");
+  }
+  return 0;
+}
+
+} // namespace __detail
 template <> class ImageIPT<COLOR> : virtual public ImageInterface {
 public:
-  ImageIPT(ImageIPT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIPT &operator=(ImageIPT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   unsigned redBits() const noexcept {
-    return m_FormatRedBits(m_createInfo.format);
+    return __detail::m_FormatRedBits(m_createInfo.format);
   }
   unsigned greenBits() const noexcept {
-    return m_FormatGreenBits(m_createInfo.format);
+    return __detail::m_FormatGreenBits(m_createInfo.format);
   }
   unsigned blueBits() const noexcept {
-    return m_FormatBlueBits(m_createInfo.format);
+    return __detail::m_FormatBlueBits(m_createInfo.format);
   }
   unsigned alphaBits() const noexcept {
-    return m_FormatAlphaBits(m_createInfo.format);
+    return __detail::m_FormatAlphaBits(m_createInfo.format);
   }
 
 protected:
@@ -413,14 +665,8 @@ protected:
 
 template <> class ImageIPT<DEPTH> : virtual public ImageInterface {
 public:
-  ImageIPT(ImageIPT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIPT &operator=(ImageIPT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   unsigned dBits() const noexcept {
-    return m_FormatDepthBits(m_createInfo.format);
+    return __detail::m_FormatDepthBits(m_createInfo.format);
   }
 
 protected:
@@ -429,17 +675,11 @@ protected:
 
 template <> class ImageIPT<DEPTH_STENCIL> : virtual public ImageInterface {
 public:
-  ImageIPT(ImageIPT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIPT &operator=(ImageIPT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   unsigned dBits() const noexcept {
-    return m_FormatDepthBits(m_createInfo.format);
+    return __detail::m_FormatDepthBits(m_createInfo.format);
   }
   unsigned sBits() const noexcept {
-    return m_FormatStencilBits(m_createInfo.format);
+    return __detail::m_FormatStencilBits(m_createInfo.format);
   }
 
 protected:
@@ -448,23 +688,11 @@ protected:
 
 template <ImageType itype> class ImageIT : virtual public ImageInterface {
 public:
-  ImageIT(ImageIT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIT &operator=(ImageIT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   ImageIT() noexcept { m_createInfo.imageType = ImageTypeVal<itype>::value; }
 };
 
 template <> class ImageIT<I1D> : virtual public ImageInterface {
 public:
-  ImageIT(ImageIT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIT &operator=(ImageIT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   ImageIT(unsigned width, unsigned = 0, unsigned = 0) noexcept {
     m_createInfo.imageType = ImageTypeVal<I1D>::value;
     m_createInfo.extent.width = width;
@@ -477,12 +705,6 @@ public:
 
 template <> class ImageIT<I2D> : virtual public ImageInterface {
 public:
-  ImageIT(ImageIT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIT &operator=(ImageIT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   ImageIT(unsigned width, unsigned height, unsigned = 0) noexcept {
     m_createInfo.imageType = ImageTypeVal<I2D>::value;
     m_createInfo.extent.width = width;
@@ -497,12 +719,6 @@ public:
 
 template <> class ImageIT<I3D> : virtual public ImageInterface {
 public:
-  ImageIT(ImageIT &&another) noexcept : ImageInterface(std::move(another)) {}
-  ImageIT &operator=(ImageIT &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
   ImageIT(unsigned width, unsigned height, unsigned depth) noexcept {
     m_createInfo.imageType = ImageTypeVal<I3D>::value;
     m_createInfo.extent.width = width;
@@ -542,7 +758,7 @@ class ImageView : public ImageViewIPT<ptype>,
                   public ImageViewCreator {
 public:
   template <ImageType itype>
-  requires CompatibleViewTypeC<itype, vtype>
+    requires CompatibleViewTypeC<itype, vtype>
   ImageView(Device const &device, BasicImage<ptype, itype, ARRAY> const &image,
             VkFormat format, unsigned baseLayer = 0, unsigned layerCount = 1,
             unsigned baseMipLevel = 0, unsigned mipLevels = 1,
@@ -553,15 +769,14 @@ public:
                     .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                     .a = VK_COMPONENT_SWIZZLE_IDENTITY,
                 },
-            VkImageViewCreateFlags flags = 0)
-  noexcept(ExceptionsDisabled)
+            VkImageViewCreateFlags flags = 0) noexcept(ExceptionsDisabled)
       : ImageViewBase(&image, format, 0, 0, mapping, flags),
         ImageViewIPT<ptype>(format),
         ImageViewSubRange(baseLayer, layerCount, baseMipLevel, mipLevels),
         ImageViewVT<vtype>(), ImageViewCreator(device) {}
 
   template <ImageType itype>
-  requires CompatibleViewTypeC<itype, vtype>
+    requires CompatibleViewTypeC<itype, vtype>
   ImageView(Device const &device, BasicImage<ptype, itype, SINGLE> const &image,
             VkFormat format, unsigned baseMipLevel = 0, unsigned mipLevels = 1,
             VkComponentMapping mapping =
@@ -571,8 +786,7 @@ public:
                     .b = VK_COMPONENT_SWIZZLE_IDENTITY,
                     .a = VK_COMPONENT_SWIZZLE_IDENTITY,
                 },
-            VkImageViewCreateFlags flags = 0)
-  noexcept(ExceptionsDisabled)
+            VkImageViewCreateFlags flags = 0) noexcept(ExceptionsDisabled)
       : ImageViewBase(&image, format, 0, 0, mapping, flags),
         ImageViewIPT<ptype>(format),
         ImageViewSubRange(0, 1, baseMipLevel, mipLevels), ImageViewVT<vtype>(),
@@ -580,14 +794,6 @@ public:
 };
 
 class ImageRestInterface : virtual public ImageInterface {
-public:
-  ImageRestInterface(ImageRestInterface &&another) noexcept
-      : ImageInterface(std::move(another)) {}
-  ImageRestInterface &operator=(ImageRestInterface &&another) noexcept {
-    ImageInterface::operator=(std::move(another));
-    return *this;
-  }
-
 protected:
   ImageRestInterface(VkSampleCountFlagBits samples, uint32_t mipLevels,
                      VkImageUsageFlags usage, VkImageCreateFlags flags,
@@ -646,7 +852,7 @@ class StagingImage : public BasicImage<COLOR, I2D, SINGLE>,
                      public ImageRestInterface,
                      private AllocatedImage {
 public:
-  StagingImage(VmaAllocator allocator, VkFormat colorFormat, uint32_t width,
+  StagingImage(DeviceAllocator& allocator, VkFormat colorFormat, uint32_t width,
                uint32_t height) noexcept(ExceptionsDisabled)
       : BasicImage<COLOR, I2D, SINGLE>(colorFormat, width, height, 1, 1),
         ImageRestInterface(VK_SAMPLE_COUNT_1_BIT, 1,
@@ -655,9 +861,11 @@ public:
                            0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_LINEAR,
                            SharingInfo{}),
         AllocatedImage(allocator,
-                       {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                       AllocationCreateInfo{
+                        /// TODO: re-fill
+                        /*.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
                         .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                        .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT}) {
+                        .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT*/}) {
   }
 
   std::span<unsigned char> mapped() noexcept {
@@ -678,7 +886,7 @@ class Image : public BasicImage<ptype, itype, iarr>,
               public ImageRestInterface,
               public AllocatedImage {
 public:
-  Image(VmaAllocator allocator, VmaAllocationCreateInfo allocCreateInfo,
+  Image(DeviceAllocator &allocator, const AllocationCreateInfo &allocCreateInfo,
         VkFormat format, uint32_t width, uint32_t height, uint32_t depth,
         uint32_t layers, uint32_t mipLevels, VkImageUsageFlags usage,
         VkImageCreateFlags flags = 0,

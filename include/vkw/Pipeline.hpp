@@ -2,6 +2,7 @@
 #define VKRENDERER_PIPELINE_HPP
 
 #include <vkw/DescriptorSet.hpp>
+#include <vkw/PipelineCache.hpp>
 #include <vkw/RenderPass.hpp>
 #include <vkw/Shader.hpp>
 #include <vkw/VertexBuffer.hpp>
@@ -13,7 +14,6 @@
 
 namespace vkw {
 
-class PipelineCache;
 /**
  *
  * @class SpecializationConstants
@@ -23,67 +23,53 @@ class PipelineCache;
  *
  */
 
-class SpecializationConstants {
+class SpecializationConstants final {
 public:
-  SpecializationConstants();
-
-  SpecializationConstants(SpecializationConstants &&another) noexcept
-      : m_entries(std::move(another.m_entries)),
-        m_data(std::move(another.m_data)), m_info(another.m_info) {
-    m_info.pMapEntries = m_entries.data();
-    m_info.pData = m_data.data();
-  };
-  SpecializationConstants(SpecializationConstants const &another) noexcept(
-      ExceptionsDisabled)
-      : m_entries(another.m_entries), m_data(another.m_data),
-        m_info(another.m_info) {
-    m_info.pMapEntries = m_entries.data();
-    m_info.pData = m_data.data();
-  };
-
-  SpecializationConstants &
-  operator=(SpecializationConstants &&another) noexcept {
-    m_entries = std::move(another.m_entries);
-    m_data = std::move(another.m_data);
-    m_info = another.m_info;
-    m_info.pMapEntries = m_entries.data();
-    m_info.pData = m_data.data();
-    return *this;
-  }
-
-  SpecializationConstants &operator=(
-      SpecializationConstants const &another) noexcept(ExceptionsDisabled) {
-    m_entries = another.m_entries;
-    m_data = another.m_data;
-    m_info = another.m_info;
-    m_info.pMapEntries = m_entries.data();
-    m_info.pData = m_data.data();
-    return *this;
-  }
+  SpecializationConstants() = default;
 
   bool empty() const noexcept { return m_entries.empty(); }
 
   template <typename T>
   void addConstant(T const &constant,
                    uint32_t id) noexcept(ExceptionsDisabled) {
-    m_addConstant(&constant, sizeof(constant), id);
+    constexpr auto size = sizeof(constant);
+    if (std::find_if(m_entries.begin(), m_entries.end(),
+                     [id](VkSpecializationMapEntry const &entry) {
+                       return entry.constantID == id;
+                     }) != m_entries.end())
+      postError(LogicError(
+          "Tying to assign duplicate specialization constants. id = " +
+          std::to_string(id)));
+
+    auto offset = m_data.size();
+    m_data.resize(offset + size);
+    memcpy(m_data.data() + offset, &constant, size);
+
+    VkSpecializationMapEntry newEntry{};
+    newEntry.constantID = id;
+    newEntry.size = size;
+    newEntry.offset = offset;
+    m_entries.push_back(newEntry);
   }
 
   void clear() {
     m_entries.clear();
     m_data.clear();
-    m_info.mapEntryCount = 0;
   }
 
-  operator VkSpecializationInfo const &() const noexcept { return m_info; }
+  operator VkSpecializationInfo() const noexcept {
+    VkSpecializationInfo info{};
+    info.mapEntryCount = m_entries.size();
+    info.pMapEntries = m_entries.data();
+    info.dataSize = m_data.size();
+    info.pData = m_data.data();
+
+    return info;
+  }
 
 private:
-  void m_addConstant(const void *constant, size_t size,
-                     uint32_t id) noexcept(ExceptionsDisabled);
-
-  boost::container::small_vector<VkSpecializationMapEntry, 3> m_entries;
-  boost::container::small_vector<unsigned char, 64> m_data;
-  VkSpecializationInfo m_info{};
+  cntr::vector<VkSpecializationMapEntry, 3> m_entries;
+  cntr::vector<unsigned char, 64> m_data;
 };
 
 /**
@@ -98,14 +84,16 @@ private:
 class PipelineLayoutInfo {
 public:
   explicit PipelineLayoutInfo(VkPipelineLayoutCreateFlags flags = 0) noexcept(
-      ExceptionsDisabled) {
-    m_fillInfo(flags);
+      ExceptionsDisabled)
+      : m_flags(flags) {
+    m_initRaw();
   }
   template <forward_range_of<DescriptorSetLayout const> T>
   explicit PipelineLayoutInfo(
       T const &setLayouts,
       std::span<const VkPushConstantRange> pushConstants = {},
-      VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled) {
+      VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled)
+      : m_flags(flags) {
     std::copy(pushConstants.begin(), pushConstants.end(),
               std::back_inserter(m_pushConstants));
     std::transform(setLayouts.begin(), setLayouts.end(),
@@ -114,21 +102,31 @@ public:
                      return StrongReference<DescriptorSetLayout const>(
                          layout.get());
                    });
-    m_fillInfo(flags);
+    m_initRaw();
   }
 
   // overload for 1 element case
   explicit PipelineLayoutInfo(
       DescriptorSetLayout const &setLayout,
       std::span<const VkPushConstantRange> pushConstants = {},
-      VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled) {
+      VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled)
+      : m_flags(flags) {
     std::copy(pushConstants.begin(), pushConstants.end(),
               std::back_inserter(m_pushConstants));
     m_descriptorLayouts.emplace_back(setLayout);
-    m_fillInfo(flags);
+    m_initRaw();
   }
 
-  bool operator==(PipelineLayoutInfo const &rhs) const noexcept;
+  bool operator==(PipelineLayoutInfo const &rhs) const noexcept {
+    if (m_flags != rhs.m_flags ||
+        m_descriptorLayouts.size() != rhs.m_descriptorLayouts.size())
+      return false;
+    auto rhsLayoutIter = rhs.m_descriptorLayouts.begin();
+    return std::all_of(m_descriptorLayouts.begin(), m_descriptorLayouts.end(),
+                       [&rhsLayoutIter](DescriptorSetLayout const &layout) {
+                         return layout == *(rhsLayoutIter++);
+                       });
+  }
 
   bool operator!=(PipelineLayoutInfo const &rhs) const noexcept {
     return !(*this == rhs);
@@ -142,18 +140,33 @@ public:
 
   auto end() const noexcept { return m_descriptorLayouts.begin(); }
 
-  auto &info() const noexcept { return m_createInfo; }
+  auto info() const noexcept {
+    VkPipelineLayoutCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    createInfo.pNext = nullptr;
+    createInfo.flags = m_flags;
+    createInfo.setLayoutCount = m_rawLayout.size();
+    createInfo.pSetLayouts = m_rawLayout.data();
+    // TODO : verify push constant ranges against the device limits
+    createInfo.pushConstantRangeCount = m_pushConstants.size();
+    createInfo.pPushConstantRanges = m_pushConstants.data();
+    return createInfo;
+  }
 
 private:
-  void
-  m_fillInfo(VkPipelineLayoutCreateFlags flags) noexcept(ExceptionsDisabled);
+  void m_initRaw() noexcept(ExceptionsDisabled) {
+    std::transform(m_descriptorLayouts.begin(), m_descriptorLayouts.end(),
+                   std::back_inserter(m_rawLayout),
+                   [](auto &layout) -> VkDescriptorSetLayout {
+                     return layout.operator const vkw::DescriptorSetLayout &();
+                   });
+  }
 
-  boost::container::small_vector<StrongReference<DescriptorSetLayout const>, 4>
+  cntr::vector<StrongReference<DescriptorSetLayout const>, 4>
       m_descriptorLayouts{};
-  boost::container::small_vector<VkDescriptorSetLayout, 4> m_rawLayout{};
-  boost::container::small_vector<VkPushConstantRange, 4> m_pushConstants{};
-
-  VkPipelineLayoutCreateInfo m_createInfo{};
+  cntr::vector<VkDescriptorSetLayout, 4> m_rawLayout{};
+  cntr::vector<VkPushConstantRange, 4> m_pushConstants{};
+  VkPipelineLayoutCreateFlags m_flags{};
 };
 
 /**
@@ -165,29 +178,28 @@ private:
  *
  */
 
-class PipelineLayout : public PipelineLayoutInfo,
-                       public UniqueVulkanObject<VkPipelineLayout> {
+class PipelineLayout : public PipelineLayoutInfo, public vk::PipelineLayout {
 public:
   explicit PipelineLayout(
       Device const &device,
       VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled)
-      : PipelineLayoutInfo(flags), UniqueVulkanObject<VkPipelineLayout>(
-                                       device, info()) {}
+      : PipelineLayoutInfo(flags), vk::PipelineLayout(device, info()) {}
   template <forward_range_of<DescriptorSetLayout const> T>
   PipelineLayout(
       Device const &device, T const &setLayouts,
       std::span<const VkPushConstantRange> pushConstants = {},
       VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled)
       : PipelineLayoutInfo(setLayouts, pushConstants, flags),
-        UniqueVulkanObject<VkPipelineLayout>(device, info()) {}
+        vk::PipelineLayout(device, info()) {}
 
   // overload for 1 element case
   PipelineLayout(
       Device const &device, DescriptorSetLayout const &setLayout,
       std::span<const VkPushConstantRange> pushConstants = {},
       VkPipelineLayoutCreateFlags flags = 0) noexcept(ExceptionsDisabled)
-      : PipelineLayoutInfo(setLayout, pushConstants, flags),
-        UniqueVulkanObject<VkPipelineLayout>(device, info()) {}
+      : PipelineLayoutInfo(setLayout, pushConstants, flags), vk::PipelineLayout(
+                                                                 device,
+                                                                 info()) {}
 
   bool operator==(PipelineLayout const &rhs) const noexcept {
     return PipelineLayoutInfo::operator==(rhs);
@@ -223,13 +235,6 @@ public:
 
 class VertexInputStateCreateInfoBase : public ReferenceGuard {
 public:
-  VertexInputStateCreateInfoBase(
-      uint32_t attributeDescCount,
-      VkVertexInputAttributeDescription const *pAttributeDesc,
-      uint32_t bindingDescCount,
-      VkVertexInputBindingDescription const *pBindingDesc,
-      VkPipelineVertexInputStateCreateFlags flags = 0) noexcept;
-
   operator VkPipelineVertexInputStateCreateInfo const &() const noexcept {
     return m_createInfo;
   }
@@ -238,15 +243,47 @@ public:
     return m_createInfo.vertexAttributeDescriptionCount;
   }
   VkVertexInputAttributeDescription attribute(uint32_t index) const
-      noexcept(ExceptionsDisabled);
+      noexcept(ExceptionsDisabled) {
+    if (index >= totalAttributes())
+      postError(LogicError(
+          "VertexInputStateCreateInfoBase::attribute(" + std::to_string(index) +
+          ") exceeded pVertexAttributeDescriptions array bounds (size = " +
+          std::to_string(totalAttributes()) + ")"));
+
+    return m_createInfo.pVertexAttributeDescriptions[index];
+  }
 
   uint32_t totalBindings() const noexcept {
     return m_createInfo.vertexBindingDescriptionCount;
   }
   VkVertexInputBindingDescription binding(uint32_t index) const
-      noexcept(ExceptionsDisabled);
+      noexcept(ExceptionsDisabled) {
+    if (index >= totalBindings())
+      postError(LogicError(
+          "VertexInputStateCreateInfoBase::binding(" + std::to_string(index) +
+          ") exceeded pVertexBindingDescriptions array bounds (size = " +
+          std::to_string(totalBindings()) + ")"));
 
-  virtual ~VertexInputStateCreateInfoBase() = default;
+    return m_createInfo.pVertexBindingDescriptions[index];
+  }
+
+protected:
+  VertexInputStateCreateInfoBase(
+      uint32_t attributeDescCount,
+      VkVertexInputAttributeDescription const *pAttributeDesc,
+      uint32_t bindingDescCount,
+      VkVertexInputBindingDescription const *pBindingDesc,
+      VkPipelineVertexInputStateCreateFlags flags = 0) noexcept {
+
+    m_createInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    m_createInfo.pNext = nullptr;
+    m_createInfo.flags = flags;
+    m_createInfo.pVertexAttributeDescriptions = pAttributeDesc;
+    m_createInfo.pVertexBindingDescriptions = pBindingDesc;
+    m_createInfo.vertexAttributeDescriptionCount = attributeDescCount;
+    m_createInfo.vertexBindingDescriptionCount = bindingDescCount;
+  }
 
 private:
   VkPipelineVertexInputStateCreateInfo m_createInfo{};
@@ -261,12 +298,15 @@ private:
  *
  */
 
-class NullVertexInputState : public VertexInputStateCreateInfoBase {
+class NullVertexInputState final : public VertexInputStateCreateInfoBase {
 public:
   /**
    * @return reference to statically created NullVertexInputState object
    */
-  static NullVertexInputState &get() noexcept;
+  static NullVertexInputState &get() noexcept {
+    static NullVertexInputState handle;
+    return handle;
+  }
 
 private:
   NullVertexInputState() noexcept
@@ -290,14 +330,14 @@ private:
  */
 
 template <typename T>
-concept BindingPointDescriptionLike = requires(T desc) {
-  T::binding;
-  std::same_as<decltype(T::binding), uint32_t>;
-  T::value;
-  std::same_as<decltype(T::value), VkVertexInputBindingDescription>;
-  typename T::Attributes;
-}
-&&AttributeArray<typename T::Attributes>;
+concept BindingPointDescriptionLike =
+    requires(T desc) {
+      T::binding;
+      std::same_as<decltype(T::binding), uint32_t>;
+      T::value;
+      std::same_as<decltype(T::value), VkVertexInputBindingDescription>;
+      typename T::Attributes;
+    } && AttributeArray<typename T::Attributes>;
 
 /**
  *
@@ -348,7 +388,7 @@ template <AttributeArray T, uint32_t bindingT = 0> struct per_instance {
  */
 
 template <BindingPointDescriptionLike... Bindings>
-class VertexInputStateCreateInfo : public VertexInputStateCreateInfoBase {
+class VertexInputStateCreateInfo final : public VertexInputStateCreateInfoBase {
 private:
   template <BindingPointDescriptionLike First,
             BindingPointDescriptionLike Second,
@@ -433,11 +473,18 @@ typename VertexInputStateCreateInfo<Bindings...>::M_AttributeDescHolder const
  *
  */
 
-class InputAssemblyStateCreateInfo {
+class InputAssemblyStateCreateInfo final {
 public:
   InputAssemblyStateCreateInfo(
       VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-      VkBool32 restartEnable = false) noexcept;
+      VkBool32 restartEnable = false) noexcept {
+    m_createInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    m_createInfo.pNext = nullptr;
+    m_createInfo.topology = topology;
+    m_createInfo.primitiveRestartEnable = restartEnable;
+    m_createInfo.flags = 0;
+  }
 
   operator VkPipelineInputAssemblyStateCreateInfo const &() const noexcept {
     return m_createInfo;
@@ -451,8 +498,6 @@ public:
     return m_createInfo.primitiveRestartEnable;
   }
 
-  virtual ~InputAssemblyStateCreateInfo() = default;
-
 private:
   VkPipelineInputAssemblyStateCreateInfo m_createInfo{};
 };
@@ -465,7 +510,7 @@ private:
  *
  */
 
-class RasterizationStateCreateInfo {
+class RasterizationStateCreateInfo final {
 public:
   RasterizationStateCreateInfo(
       VkBool32 depthClampEnable = VK_FALSE,
@@ -475,9 +520,22 @@ public:
       VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
       VkBool32 depthBiasEnable = false, float depthBiasConstantFactor = 0,
       float depthBiasClamp = 0, float depthBiasSlopeFactor = 0,
-      float lineWidth = 1.0f) noexcept;
-
-  virtual ~RasterizationStateCreateInfo() = default;
+      float lineWidth = 1.0f) noexcept {
+    m_createInfo.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    m_createInfo.pNext = nullptr;
+    m_createInfo.flags = 0;
+    m_createInfo.depthClampEnable = depthClampEnable;
+    m_createInfo.rasterizerDiscardEnable = rasterizerDiscardEnable;
+    m_createInfo.polygonMode = polygonMode;
+    m_createInfo.cullMode = cullMode;
+    m_createInfo.frontFace = frontFace;
+    m_createInfo.depthBiasEnable = depthBiasEnable;
+    m_createInfo.depthBiasConstantFactor = depthBiasConstantFactor;
+    m_createInfo.depthBiasClamp = depthBiasClamp;
+    m_createInfo.depthBiasSlopeFactor = depthBiasSlopeFactor;
+    m_createInfo.lineWidth = lineWidth;
+  }
 
   operator VkPipelineRasterizationStateCreateInfo const &() const noexcept {
     return m_createInfo;
@@ -495,7 +553,7 @@ private:
  *
  */
 
-class DepthTestStateCreateInfo {
+class DepthTestStateCreateInfo final {
 public:
   DepthTestStateCreateInfo(VkCompareOp compareOp, bool writeEnable,
                            float minDepth = 0.0f,
@@ -523,42 +581,239 @@ private:
  */
 
 class GraphicsPipelineCreateInfo {
+private:
+  template <typename Stage>
+  using ShaderInfo =
+      std::pair<StrongReference<const Stage>, VkSpecializationInfo>;
+  template <typename... Stage>
+  using ShaderInfos = std::tuple<std::optional<ShaderInfo<Stage>>...>;
+
+  template <typename Stage> static auto &m_getStage(auto &&infos) {
+    return std::get<std::optional<ShaderInfo<Stage>>>(infos);
+  }
+
 public:
   GraphicsPipelineCreateInfo(
-      RenderPass const &renderPass, uint32_t subpass,
-      PipelineLayout const &layout) noexcept(ExceptionsDisabled);
+      RenderPass const &renderPass,
+      PipelineLayout const &layout) noexcept(ExceptionsDisabled)
+      : m_renderPass(renderPass), m_layout(layout) {
 
-  GraphicsPipelineCreateInfo(GraphicsPipelineCreateInfo &&another) noexcept;
-  GraphicsPipelineCreateInfo(GraphicsPipelineCreateInfo const &another);
+    m_inputAssemblyStateCreateInfo = vkw::InputAssemblyStateCreateInfo{};
+    m_rasterizationStateCreateInfo = vkw::RasterizationStateCreateInfo{};
+
+    // Default MultisampleStateCreateInfo
+    m_multisampleState.sampleShadingEnable = VK_FALSE;
+    m_multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    m_multisampleState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    m_multisampleState.pNext = nullptr;
+    m_multisampleState.flags = 0;
+
+    // Default Depth/stencil state create info
+    m_depthStencilState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    m_depthStencilState.pNext = nullptr;
+    m_depthStencilState.depthTestEnable = VK_FALSE;
+    m_depthStencilState.depthWriteEnable = VK_FALSE;
+    m_depthStencilState.stencilTestEnable = VK_FALSE;
+    m_depthStencilState.depthBoundsTestEnable = VK_FALSE;
+
+    // Default Color blending state create info
+    m_colorBlendState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    m_colorBlendState.pNext = nullptr;
+    m_colorBlendState.flags = 0;
+    m_colorBlendState.attachmentCount =
+        m_renderPass.get().numColorAttachments();
+    VkPipelineColorBlendAttachmentState state{};
+    state.blendEnable = VK_FALSE;
+    state.colorWriteMask = 0xf;
+    m_blendStates.resize(m_colorBlendState.attachmentCount, state);
+    m_colorBlendState.pAttachments = m_blendStates.data();
+    m_colorBlendState.logicOpEnable = VK_FALSE;
+
+    m_viewportState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    m_viewportState.pNext = nullptr;
+    m_viewportState.flags = 0;
+    m_viewportState.viewportCount = m_viewportState.scissorCount = 1;
+
+    m_dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    m_dynamicState.pNext = nullptr;
+    m_dynamicState.dynamicStateCount = 0;
+    m_dynamicState.pDynamicStates = nullptr;
+    m_dynamicState.flags = 0;
+  }
 
   GraphicsPipelineCreateInfo &
-  addDepthTestState(DepthTestStateCreateInfo depthTest) noexcept;
+  addDepthTestState(DepthTestStateCreateInfo depthTest) noexcept {
+    auto dTest =
+        depthTest.operator const VkPipelineDepthStencilStateCreateInfo &();
+    m_depthStencilState.depthTestEnable = VK_TRUE;
+    m_depthStencilState.depthWriteEnable = dTest.depthWriteEnable;
+    m_depthStencilState.depthCompareOp = dTest.depthCompareOp;
+    m_depthStencilState.minDepthBounds = dTest.minDepthBounds;
+    m_depthStencilState.maxDepthBounds = dTest.maxDepthBounds;
+    return *this;
+  }
+
+  template <typename Stage>
   GraphicsPipelineCreateInfo &
-  addVertexShader(VertexShader const &shader,
-                  SpecializationConstants const &constants = {}) noexcept;
-  GraphicsPipelineCreateInfo &
-  addFragmentShader(FragmentShader const &shader,
-                    SpecializationConstants const &constants = {}) noexcept;
+  addShader(Stage const &shader, SpecializationConstants const &constants = {},
+            VkPipelineShaderStageCreateFlags flags = 0) noexcept {
+    auto &shaderInfo = m_getStage<Stage>(m_shaders);
+    if (shaderInfo.has_value()) {
+      VkShaderModule module = shaderInfo->first.get();
+      auto newEnd =
+          std::remove_if(m_shaderStages.begin(), m_shaderStages.end(),
+                         [module](VkPipelineShaderStageCreateInfo info) {
+                           return info.module == module;
+                         });
+
+      m_shaderStages.erase(newEnd);
+    }
+    VkPipelineShaderStageCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    createInfo.pNext = nullptr;
+    createInfo.module = shader;
+    createInfo.pName = "main";
+    createInfo.flags = flags;
+    createInfo.stage = shader.stage();
+
+    m_shaderStages.push_back(createInfo);
+    shaderInfo.emplace(shader, constants);
+    return *this;
+  }
+
   GraphicsPipelineCreateInfo &addVertexInputState(
-      VertexInputStateCreateInfoBase const &vertexInputState) noexcept;
+      VertexInputStateCreateInfoBase const &vertexInputState) noexcept {
+    m_vertexInputStateCreateInfo = vertexInputState;
+    return *this;
+  }
+
   GraphicsPipelineCreateInfo &addInputAssemblyState(
-      InputAssemblyStateCreateInfo const &inputAssemblyState) noexcept;
+      InputAssemblyStateCreateInfo const &inputAssemblyState) noexcept {
+    m_inputAssemblyStateCreateInfo = inputAssemblyState;
+    return *this;
+  }
+
   GraphicsPipelineCreateInfo &addRasterizationState(
-      RasterizationStateCreateInfo const &rasterizationState) noexcept;
+      RasterizationStateCreateInfo const &rasterizationState) noexcept {
+    m_rasterizationStateCreateInfo = rasterizationState;
+    return *this;
+  }
+
   GraphicsPipelineCreateInfo &
   addBlendState(VkPipelineColorBlendAttachmentState state,
-                uint32_t attachment) noexcept;
-  GraphicsPipelineCreateInfo &addDynamicState(VkDynamicState state) noexcept;
+                uint32_t attachment) noexcept {
+    m_blendStates.at(attachment) = state;
+    return *this;
+  }
+
+  GraphicsPipelineCreateInfo &addDynamicState(VkDynamicState state) noexcept {
+    if (std::find(m_dynStates.begin(), m_dynStates.end(), state) ==
+        m_dynStates.end()) {
+      m_dynStates.emplace_back(state);
+    }
+    return *this;
+  }
   GraphicsPipelineCreateInfo &
-  enableMultisampling(bool alphaToCoverageEnable,
-                      bool alphaToOneEnable) noexcept(ExceptionsDisabled);
-  GraphicsPipelineCreateInfo &
-  enableSampleRateShading(float minRate) noexcept(ExceptionsDisabled);
+  enableMultisampling(VkSampleCountFlagBits sampleCount,
+                      bool alphaToCoverageEnable,
+                      bool alphaToOneEnable) noexcept(ExceptionsDisabled) {
+    m_multisampleState.rasterizationSamples = sampleCount;
+    m_multisampleState.alphaToCoverageEnable = alphaToCoverageEnable;
+    m_multisampleState.alphaToOneEnable = alphaToOneEnable;
+    return *this;
+  };
 
   GraphicsPipelineCreateInfo &
-  setSampleMask(std::span<VkSampleMask> mask) noexcept(ExceptionsDisabled);
-  operator VkGraphicsPipelineCreateInfo const &() const noexcept {
-    return m_createInfo;
+  enableSampleRateShading(float minRate) noexcept(ExceptionsDisabled) {
+    if (m_multisampleState.rasterizationSamples == VK_SAMPLE_COUNT_1_BIT) {
+      postError(LogicError{"enableSampleRateShading() cannot be called if "
+                           "multisampling is not enabled"});
+    }
+    if (pass().parent().physicalDevice().enabledFeatures().sampleRateShading ==
+        VK_FALSE) {
+      postError(LogicError{"enableSampleRateShading() cannot be called if "
+                           "sampleRateShading feature is not enabled"});
+    }
+
+    m_multisampleState.sampleShadingEnable = VK_TRUE;
+    m_multisampleState.minSampleShading = minRate;
+    return *this;
+  }
+
+  GraphicsPipelineCreateInfo &
+  setSampleMask(std::span<VkSampleMask> mask) noexcept(ExceptionsDisabled) {
+    if (m_multisampleState.rasterizationSamples == VK_SAMPLE_COUNT_1_BIT) {
+      postError(LogicError{"setSampleMask() cannot be called if "
+                           "multisampling is not enabled"});
+    }
+    auto getProperMaskLength = [](VkSampleCountFlagBits samples) {
+      switch (samples) {
+      case VK_SAMPLE_COUNT_64_BIT:
+        return 2;
+      default:
+        return 1;
+      }
+    };
+    if (mask.size() !=
+        getProperMaskLength(m_multisampleState.rasterizationSamples)) {
+      postError(
+          LogicError{"mask provided ro setSampleMask() has incorrect size"});
+    }
+    m_sampleMask.clear();
+    std::copy(mask.begin(), mask.end(), std::back_inserter(m_sampleMask));
+    return *this;
+  }
+
+  operator VkGraphicsPipelineCreateInfo() const noexcept {
+    m_colorBlendState.attachmentCount = m_blendStates.size();
+    m_colorBlendState.pAttachments = m_blendStates.data();
+    m_dynamicState.dynamicStateCount = m_dynStates.size();
+    m_dynamicState.pDynamicStates = m_dynStates.data();
+    VkGraphicsPipelineCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    createInfo.pNext = nullptr;
+    createInfo.flags = 0;
+    createInfo.renderPass = m_renderPass.get();
+    createInfo.layout = m_layout.get();
+    // multiple subpasses are not supported.
+    createInfo.subpass = 0;
+    createInfo.pColorBlendState = &m_colorBlendState;
+    createInfo.pDepthStencilState = &m_depthStencilState;
+    createInfo.pDynamicState = &m_dynamicState;
+    createInfo.pViewportState = &m_viewportState;
+    createInfo.pInputAssemblyState = &m_inputAssemblyStateCreateInfo;
+    createInfo.pMultisampleState = &m_multisampleState;
+    createInfo.pRasterizationState = &m_rasterizationStateCreateInfo;
+    createInfo.pTessellationState =
+        nullptr; // TODO: implement tesselation shader support
+    createInfo.pVertexInputState =
+        &(m_vertexInputStateCreateInfo.get().
+          operator const VkPipelineVertexInputStateCreateInfo &());
+    VkSpecializationInfo info{};
+    auto applySpecConstants = [this](auto &&shader) {
+      if (!shader)
+        return;
+      auto &&[shaderRef, specInfo] = *shader;
+      if (specInfo.mapEntryCount == 0)
+        return;
+      VkShaderModule shadMod = shaderRef.get();
+      auto foundInfo =
+          std::ranges::find_if(m_shaderStages, [&shadMod](auto &&stage) {
+            return stage.module == shadMod;
+          });
+      assert(foundInfo != m_shaderStages.end());
+      foundInfo->pSpecializationInfo = &specInfo;
+    };
+    std::apply([&](auto &&...shaders) { (applySpecConstants(shaders), ...); },
+               m_shaders);
+
+    createInfo.stageCount = m_shaderStages.size();
+    createInfo.pStages = m_shaderStages.data();
+    return createInfo;
   }
 
   VertexInputStateCreateInfoBase const &vertexInputState() const noexcept {
@@ -577,23 +832,23 @@ public:
 
   RenderPass const &pass() const noexcept { return m_renderPass; }
 
-  uint32_t subpass() const noexcept { return m_createInfo.subpass; }
+  template <typename Stage> auto shader() const noexcept {
+    return m_getStage<Stage>(m_shaders);
+  }
 
-  auto vertexShader() const noexcept { return m_vertexShader; }
-
-  auto fragmentShader() const noexcept { return m_fragmentShader; }
+  void clearShaders() {
+    std::apply([](auto &&...shdrs) { (shdrs.reset(), ...); }, m_shaders);
+    m_shaderStages.clear();
+  }
 
 private:
   StrongReference<RenderPass const> m_renderPass;
+  StrongReference<PipelineLayout const> m_layout;
 
   // Shader Stages
-
-  boost::container::small_vector<VkPipelineShaderStageCreateInfo, 2>
-      m_shaderStages;
-  std::optional<StrongReference<VertexShader const>> m_vertexShader;
-  std::optional<StrongReference<FragmentShader const>> m_fragmentShader;
-
   // TODO: support other shader stages
+  mutable cntr::vector<VkPipelineShaderStageCreateInfo, 2> m_shaderStages;
+  ShaderInfos<VertexShader, FragmentShader> m_shaders;
 
   // Fixed pipeline stages
 
@@ -603,22 +858,18 @@ private:
   VkPipelineRasterizationStateCreateInfo m_rasterizationStateCreateInfo;
 
   VkPipelineMultisampleStateCreateInfo m_multisampleState{};
-  boost::container::small_vector<VkSampleMask, 2> m_sampleMask;
+  cntr::vector<VkSampleMask, 2> m_sampleMask;
   VkPipelineDepthStencilStateCreateInfo m_depthStencilState{};
-  VkPipelineColorBlendStateCreateInfo m_colorBlendState{};
-  boost::container::small_vector<VkPipelineColorBlendAttachmentState, 2>
-      m_blendStates{};
+  mutable VkPipelineColorBlendStateCreateInfo m_colorBlendState{};
+  cntr::vector<VkPipelineColorBlendAttachmentState, 2> m_blendStates{};
 
   // TODO: support configure for viewport state
   VkPipelineViewportStateCreateInfo m_viewportState{};
 
-  StrongReference<PipelineLayout const> m_layout;
-  VkGraphicsPipelineCreateInfo m_createInfo{};
-
   // dynamic states
 
-  VkPipelineDynamicStateCreateInfo m_dynamicState{};
-  boost::container::small_vector<VkDynamicState, 4> m_dynStates;
+  mutable VkPipelineDynamicStateCreateInfo m_dynamicState{};
+  cntr::vector<VkDynamicState, 4> m_dynStates;
 };
 
 /**
@@ -634,18 +885,35 @@ class ComputePipelineCreateInfo {
 public:
   ComputePipelineCreateInfo(PipelineLayout const &layout,
                             ComputeShader const &shader,
-                            SpecializationConstants constants = {}) noexcept;
+                            SpecializationConstants constants = {}) noexcept
+      : m_layout(layout), m_shader(shader), m_constants(constants) {}
 
-  operator VkComputePipelineCreateInfo const &() const noexcept {
-    return m_createInfo;
+  operator VkComputePipelineCreateInfo() const noexcept {
+    VkComputePipelineCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    createInfo.pNext = nullptr;
+    createInfo.layout = m_layout.get();
+    createInfo.flags = 0; // TODO
+    createInfo.stage.module = m_shader.get();
+    createInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    createInfo.stage.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    createInfo.stage.pNext = nullptr;
+    createInfo.stage.pName = "main"; // TODO
+    createInfo.stage.flags = 0;      // TODO
+    if (!m_constants.mapEntryCount != 0)
+      createInfo.stage.pSpecializationInfo = &m_constants;
+    else
+      createInfo.stage.pSpecializationInfo = nullptr;
+    return createInfo;
   }
 
   auto &layout() const noexcept { return m_layout.get(); }
 
 private:
   StrongReference<PipelineLayout const> m_layout;
-  SpecializationConstants m_constants;
-  VkComputePipelineCreateInfo m_createInfo;
+  StrongReference<ComputeShader const> m_shader;
+  VkSpecializationInfo m_constants;
 };
 
 /**
@@ -660,41 +928,77 @@ private:
 
 class Pipeline : public ReferenceGuard {
 public:
-  Pipeline(Device &device, GraphicsPipelineCreateInfo const
-                               &createInfo) noexcept(ExceptionsDisabled);
-  Pipeline(
-      Device &device,
-      ComputePipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled);
-
-  Pipeline(Device &device, GraphicsPipelineCreateInfo const &createInfo,
-           PipelineCache const &cache) noexcept(ExceptionsDisabled);
-  Pipeline(Device &device, ComputePipelineCreateInfo const &createInfo,
-           PipelineCache const &cache) noexcept(ExceptionsDisabled);
-
-  Pipeline(Pipeline &&another) noexcept
-      : m_device(another.m_device), m_pipeline(another.m_pipeline),
-        m_pipelineLayout(another.m_pipelineLayout) {
-    another.m_pipeline = VK_NULL_HANDLE;
-  }
-
-  Pipeline &operator=(Pipeline &&another) noexcept {
-    m_device = another.m_device;
-    m_pipelineLayout = another.m_pipelineLayout;
-    std::swap(m_pipeline, another.m_pipeline);
-
-    return *this;
-  }
-
   PipelineLayout const &layout() const noexcept { return m_pipelineLayout; }
 
-  virtual ~Pipeline();
+  operator VkPipeline() const noexcept { return m_pipeline.get(); }
 
-  operator VkPipeline() const noexcept { return m_pipeline; }
+protected:
+  Pipeline(
+      Device &device,
+      GraphicsPipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled)
+      : m_pipelineLayout(createInfo.layout()),
+        m_pipeline(
+            [&]() {
+              VkPipeline pipeline = nullptr;
+              VkGraphicsPipelineCreateInfo CI = createInfo;
+              VK_CHECK_RESULT(device.core<1, 0>().vkCreateGraphicsPipelines(
+                  device, VK_NULL_HANDLE, 1, &CI, HostAllocator::get(),
+                  &pipeline))
+              return pipeline;
+            }(),
+            PipelineDestroyer{device}) {}
+  Pipeline(
+      Device &device,
+      ComputePipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled)
+      : m_pipelineLayout(createInfo.layout()),
+        m_pipeline(
+            [&]() {
+              VkPipeline pipeline = nullptr;
+              VkComputePipelineCreateInfo CI = createInfo;
+              VK_CHECK_RESULT(device.core<1, 0>().vkCreateComputePipelines(
+                  device, VK_NULL_HANDLE, 1, &CI, HostAllocator::get(),
+                  &pipeline))
+              return pipeline;
+            }(),
+            PipelineDestroyer{device}) {}
+
+  Pipeline(Device &device, GraphicsPipelineCreateInfo const &createInfo,
+           PipelineCache const &cache) noexcept(ExceptionsDisabled)
+      : m_pipelineLayout(createInfo.layout()),
+        m_pipeline(
+            [&]() {
+              VkPipeline pipeline = nullptr;
+              VkGraphicsPipelineCreateInfo CI = createInfo;
+              VK_CHECK_RESULT(device.core<1, 0>().vkCreateGraphicsPipelines(
+                  device, cache, 1, &CI, HostAllocator::get(), &pipeline))
+              return pipeline;
+            }(),
+            PipelineDestroyer{device}) {}
+  Pipeline(Device &device, ComputePipelineCreateInfo const &createInfo,
+           PipelineCache const &cache) noexcept(ExceptionsDisabled)
+      : m_pipelineLayout(createInfo.layout()),
+        m_pipeline(
+            [&]() {
+              VkPipeline pipeline = nullptr;
+              VkComputePipelineCreateInfo CI = createInfo;
+              VK_CHECK_RESULT(device.core<1, 0>().vkCreateComputePipelines(
+                  device, cache, 1, &CI, HostAllocator::get(), &pipeline))
+              return pipeline;
+            }(),
+            PipelineDestroyer{device}) {}
 
 private:
-  StrongReference<Device> m_device;
   StrongReference<PipelineLayout const> m_pipelineLayout;
-  VkPipeline m_pipeline = VK_NULL_HANDLE;
+  struct PipelineDestroyer {
+    void operator()(VkPipeline pipeline) {
+      if (!pipeline)
+        return;
+      device.get().core<1, 0>().vkDestroyPipeline(device.get(), pipeline,
+                                                  HostAllocator::get());
+    }
+    StrongReference<Device> device;
+  };
+  std::unique_ptr<VkPipeline_T, PipelineDestroyer> m_pipeline;
 };
 
 /**
@@ -706,21 +1010,16 @@ private:
  *
  */
 
-class GraphicsPipeline : public Pipeline {
+class GraphicsPipeline final : public Pipeline {
 public:
   GraphicsPipeline(
       Device &device,
       GraphicsPipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo), m_createInfo(createInfo) {}
+      : Pipeline(device, createInfo) {}
 
   GraphicsPipeline(Device &device, GraphicsPipelineCreateInfo const &createInfo,
                    PipelineCache const &cache) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo, cache), m_createInfo(createInfo) {}
-
-  GraphicsPipelineCreateInfo const &info() const { return m_createInfo; }
-
-private:
-  GraphicsPipelineCreateInfo m_createInfo;
+      : Pipeline(device, createInfo, cache) {}
 };
 
 /**
@@ -732,20 +1031,16 @@ private:
  *
  */
 
-class ComputePipeline : public Pipeline {
+class ComputePipeline final : public Pipeline {
 public:
   ComputePipeline(
       Device &device,
       ComputePipelineCreateInfo const &createInfo) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo), m_createInfo(createInfo){};
+      : Pipeline(device, createInfo){};
 
   ComputePipeline(Device &device, ComputePipelineCreateInfo const &createInfo,
                   PipelineCache const &cache) noexcept(ExceptionsDisabled)
-      : Pipeline(device, createInfo, cache), m_createInfo(createInfo){};
-  ComputePipelineCreateInfo const &info() const { return m_createInfo; }
-
-private:
-  ComputePipelineCreateInfo m_createInfo;
+      : Pipeline(device, createInfo, cache){};
 };
 } // namespace vkw
 #endif // VKRENDERER_PIPELINE_HPP

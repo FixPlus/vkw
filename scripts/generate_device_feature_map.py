@@ -24,5 +24,18 @@ if __name__ == '__main__':
         for feature in vk_type.findall('member'):
             output += generate_feature_entry(feature)
         break
-
+    print("#ifdef VKW_DUMP_FEATURES")
     print(output)
+    print("#endif")
+    output = ""
+    for vk_type in doc.getroot().find('types').findall('type'):
+        if vk_type.attrib.get('name') != 'VkPhysicalDeviceVulkan11Features':
+            continue
+        for feature in filter(lambda n: n.find('name').text != 'sType' and n.find('name').text != 'pNext',
+                              vk_type.findall('member')):
+            output += generate_feature_entry(feature)
+        break
+
+    print("#ifdef VKW_DUMP_VULKAN11_FEATURES")
+    print(output)
+    print("#endif")

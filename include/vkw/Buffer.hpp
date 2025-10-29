@@ -2,36 +2,19 @@
 #define VKRENDERER_BUFFER_HPP
 
 #include <vkw/Allocation.hpp>
-#include <vkw/Device.hpp>
 
 namespace vkw {
 
-class BufferBase : public Allocation, public ReferenceGuard {
+class BufferBase : public Allocation<VkBuffer>, public ReferenceGuard {
 public:
-  BufferBase(VmaAllocator allocator, VkBufferCreateInfo const &createInfo,
-             VmaAllocationCreateInfo const
-                 &allocCreateInfo) noexcept(ExceptionsDisabled);
-
-  BufferBase(BufferBase const &another) = delete;
-  BufferBase(BufferBase &&another) noexcept
-      : Allocation(std::move(another)), m_buffer(another.m_buffer),
-        m_createInfo(another.m_createInfo) {
-    another.m_buffer = VK_NULL_HANDLE;
-  }
-
-  BufferBase const &operator=(BufferBase const &another) = delete;
-  BufferBase &operator=(BufferBase &&another) noexcept {
-    Allocation::operator=(std::move(another));
-    m_createInfo = another.m_createInfo;
-    std::swap(m_buffer, another.m_buffer);
-    return *this;
-  }
+  BufferBase(
+      DeviceAllocator &allocator, VkBufferCreateInfo const &createInfo,
+      AllocationCreateInfo const &allocCreateInfo) noexcept(ExceptionsDisabled)
+      : Allocation<VkBuffer>(allocator, allocCreateInfo, createInfo) {}
 
   auto bufferSize() const noexcept { return m_createInfo.size; }
 
-  ~BufferBase() override;
-
-  operator VkBuffer() const noexcept { return m_buffer; }
+  operator VkBuffer() const noexcept { return handle(); }
 
   VkBufferUsageFlags usage() const noexcept { return m_createInfo.usage; }
 
@@ -61,28 +44,20 @@ public:
 
 protected:
   VkBufferCreateInfo m_createInfo;
-
-private:
-  VkBuffer m_buffer = VK_NULL_HANDLE;
 };
-
-class Device;
 
 template <typename T> class Buffer : public BufferBase {
 public:
-  Buffer(Device const &device, uint64_t count, VkBufferUsageFlags usage,
-         VmaAllocationCreateInfo const &allocCreateInfo,
+  Buffer(DeviceAllocator &allocator, uint64_t count, VkBufferUsageFlags usage,
+         AllocationCreateInfo const &allocCreateInfo,
          SharingInfo const &sharingInfo = {}) noexcept(ExceptionsDisabled)
-      : BufferBase(device.getAllocator(), m_fillInfo(count, usage, sharingInfo),
+      : BufferBase(allocator, m_fillInfo(count, usage, sharingInfo),
                    allocCreateInfo),
-        m_count(count), m_device(device) {}
+        m_count(count) {}
 
   std::span<T> mapped() const noexcept { return Allocation::mapped<T>(); }
 
   uint64_t size() const noexcept { return m_count; }
-
-protected:
-  StrongReference<Device const> m_device;
 
 private:
   VkBufferCreateInfo m_fillInfo(uint64_t count, VkBufferUsageFlags usage,

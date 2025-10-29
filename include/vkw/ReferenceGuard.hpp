@@ -1,11 +1,22 @@
 #ifndef VKWRAPPER_REFERENCEGUARD_HPP
 #define VKWRAPPER_REFERENCEGUARD_HPP
 
-#include <atomic>
-#include <functional>
 #include <vkw/Exception.hpp>
 
+#include <atomic>
+#include <functional>
+
 namespace vkw {
+
+class ReferenceGuardError final : public Error {
+public:
+  explicit ReferenceGuardError(unsigned strongReferenceLeft) noexcept
+      : Error(std::string("Number of strong references left: ")
+                  .append(std::to_string(strongReferenceLeft))){};
+  std::string_view codeString() const noexcept override {
+    return "Reference guard error";
+  }
+};
 
 /**
  *
@@ -32,36 +43,36 @@ namespace vkw {
  *
  */
 #ifdef VKW_ENABLE_REFERENCE_GUARD
-class ReferenceGuard {
+class ReferenceGuardImpl {
 public:
-  ReferenceGuard() = default;
+  ReferenceGuardImpl() = default;
 
-  void add_reference() const { m_ref_count++; }
-
-  void remove_reference() const { m_ref_count--; }
-
-  ReferenceGuard(ReferenceGuard const &another) {
+  ReferenceGuardImpl(ReferenceGuardImpl const &another) {
     // Here we don't need to check anything
   }
 
-  ReferenceGuard(ReferenceGuard &&another) noexcept {
+  ReferenceGuardImpl(ReferenceGuardImpl &&another) noexcept {
     another.m_check_ref_count();
   }
 
-  ReferenceGuard &operator=(ReferenceGuard &&another) noexcept {
+  ReferenceGuardImpl &operator=(ReferenceGuardImpl &&another) noexcept {
     another.m_check_ref_count();
     m_check_ref_count();
     return *this;
   }
 
-  ReferenceGuard &operator=(ReferenceGuard const &another) {
+  ReferenceGuardImpl &operator=(ReferenceGuardImpl const &another) {
     m_check_ref_count();
     return *this;
   }
 
-  virtual ~ReferenceGuard() { m_check_ref_count(); }
+  virtual ~ReferenceGuardImpl() { m_check_ref_count(); }
 
 private:
+  friend class RefGuardInterface;
+  void add_reference() const { m_ref_count++; }
+
+  void remove_reference() const { m_ref_count--; }
   void m_check_ref_count() {
     if (m_ref_count != 0) {
       irrecoverableError(ReferenceGuardError(m_ref_count.load()));
@@ -69,6 +80,22 @@ private:
   }
   mutable std::atomic<int> m_ref_count = 0;
 };
+
+class RefGuardInterface final {
+public:
+  static void add_reference(const ReferenceGuardImpl &rg) {
+    rg.add_reference();
+  }
+
+  static void remove_reference(const ReferenceGuardImpl &rg) {
+    rg.remove_reference();
+  }
+};
+
+class ReferenceGuard : virtual public ReferenceGuardImpl {
+public:
+};
+
 #else
 class ReferenceGuard {
 public:
@@ -102,14 +129,14 @@ public:
  */
 #ifdef VKW_ENABLE_REFERENCE_GUARD
 template <typename T, typename TBase = T>
-requires std::derived_from<TBase, ReferenceGuard> and
-    std::is_base_of_v<TBase, T>
-class StrongReference : public std::reference_wrapper<T> {
+  requires std::derived_from<TBase, ReferenceGuard> and
+           std::is_base_of_v<TBase, T>
+class StrongReference final : public std::reference_wrapper<T> {
 public:
   template <class U>
-  requires std::derived_from<U, T> StrongReference(U &object)
-      : std::reference_wrapper<T>{object} {
-    std::invoke(&TBase::add_reference, static_cast<TBase &>(object));
+    requires std::derived_from<U, T>
+  StrongReference(U &object) : std::reference_wrapper<T>{object} {
+    RefGuardInterface::add_reference(static_cast<TBase &>(object));
   }
 
   StrongReference(StrongReference &&another) noexcept
@@ -119,16 +146,16 @@ public:
 
   StrongReference(StrongReference const &another)
       : std::reference_wrapper<T>(another) {
-    std::invoke(&TBase::add_reference,
-                static_cast<TBase &>(std::reference_wrapper<T>::get()));
+    RefGuardInterface::add_reference(
+        static_cast<TBase &>(std::reference_wrapper<T>::get()));
   }
 
   StrongReference &operator=(StrongReference &&another) noexcept {
     if (this == &another)
       return *this;
     another.m_moved_out = true;
-    std::invoke(&TBase::remove_reference,
-                static_cast<TBase &>(std::reference_wrapper<T>::get()));
+    RefGuardInterface::remove_reference(
+        static_cast<TBase &>(std::reference_wrapper<T>::get()));
     std::swap(static_cast<std::reference_wrapper<T> &>(*this),
               static_cast<std::reference_wrapper<T> &>(another));
     return *this;
@@ -145,8 +172,8 @@ public:
   ~StrongReference() {
     if (m_moved_out)
       return;
-    std::invoke(&TBase::remove_reference,
-                static_cast<TBase &>(std::reference_wrapper<T>::get()));
+    RefGuardInterface::remove_reference(
+        static_cast<TBase &>(std::reference_wrapper<T>::get()));
   }
 
 private:
@@ -155,13 +182,13 @@ private:
 #else
 
 template <typename T, typename TBase = T>
-requires std::derived_from<TBase, ReferenceGuard> and
-    std::is_base_of_v<TBase, T>
-class StrongReference : public std::reference_wrapper<T> {
+  requires std::derived_from<TBase, ReferenceGuard> and
+           std::is_base_of_v<TBase, T>
+class StrongReference final : public std::reference_wrapper<T> {
 public:
   template <class U>
-  requires std::derived_from<U, T> StrongReference(U &object)
-      : std::reference_wrapper<T>{object} {}
+    requires std::derived_from<U, T>
+  StrongReference(U &object) : std::reference_wrapper<T>{object} {}
 };
 
 #endif

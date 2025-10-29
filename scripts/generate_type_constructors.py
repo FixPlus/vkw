@@ -22,16 +22,20 @@ class TypeDesc:
         print('#endif')
         print('#ifdef VKW_GENERATE_TYPE_FUNC_IMPL')
         print(
-            'PFN_' + self.constructor + ' VulkanTypeTraits<' + self.type + '>::getConstructor(' + self.creator + ' const& creator) {')
+            'inline PFN_' + self.constructor + ' VulkanTypeTraits<' + self.type + '>::getConstructor(' + self.creator + ' const& creator) {')
         print('   return creator.core<1, 0>().' + self.constructor + ';')
         print('}')
         print(
-            'PFN_' + self.destructor + ' VulkanTypeTraits<' + self.type + '>::getDestructor(' + self.creator + ' const& creator) {')
+            'inline PFN_' + self.destructor + ' VulkanTypeTraits<' + self.type + '>::getDestructor(' + self.creator + ' const& creator) {')
         print('   return creator.core<1, 0>().' + self.destructor + ';')
         print('}')
         print('#endif')
+        print('#ifdef VKW_GENERATE_ALIAS_TYPES')
+        print('namespace vk{')
+        print('using ' + self.type[2:] + ' = Unique<' + self.type + '>;')
+        print('} // namespace vk')
+        print('#endif')
         print('')
-
 
 def fill_Type_desc(command_desc):
     ret = TypeDesc()
@@ -53,6 +57,10 @@ def fill_Type_desc(command_desc):
             ret.createInfoType = param_type
     return ret
 
+def command_filter(command):
+    if not command.attrib.get('export'):
+        return False
+    return 'vulkan' in command.attrib.get('export').split(',')
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
@@ -66,7 +74,7 @@ if __name__ == '__main__':
 
     types = []
     root = doc.getroot()
-    for command in root.find('commands'):
+    for command in filter(command_filter, root.find('commands')):
         if command.find('proto') is None:
             continue
         name = command.find('proto').find('name').text
